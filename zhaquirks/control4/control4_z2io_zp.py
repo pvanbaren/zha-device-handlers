@@ -2,8 +2,11 @@
 
 ZHA entities created
 ────────────────────
-  switch.c4_z2io_zp_relay_1/2     EP 211/212  (OnOff cluster)
-  binary_sensor.c4_z2io_zp_contact_1…5   EPs 201-205  (BinaryInput cluster)
+  switch.c4_z2io_zp_relay_1/2         EP 211/212  (OnOff cluster)
+  binary_sensor.c4_z2io_zp_contact_1…5  EPs 201-205  (BinaryInput cluster)
+  sensor.c4_z2io_zp_temperature         EP 221  (TemperatureMeasurement — internal)
+  sensor.c4_z2io_zp_temperature_2       EP 222  (TemperatureMeasurement — external probe)
+  sensor.c4_z2io_zp_humidity            EP 223  (RelativeHumidity)
 
 Packet routing
 ──────────────
@@ -41,6 +44,9 @@ from zigpy.zcl.foundation import Status as ZCLStatus
 from zigpy.zcl.clusters.general import (
     BinaryInput, Identify, OnOff,
 )
+from zigpy.zcl.clusters.measurement import (
+    RelativeHumidity, TemperatureMeasurement,
+)
 
 from zhaquirks.const import (
     DEVICE_TYPE,
@@ -71,6 +77,7 @@ from c4_z2io_zp import (
     DOOR_CLOSED,
     NUM_CONTACTS,
     NUM_RELAYS,
+    TEMP_NO_PROBE_RAW,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -88,6 +95,10 @@ _C4_Z2IO_CONFIGURED: set[str] = set()
 _RELAY_EP = {1: 211, 2: 212}
 # Contact channel (1-indexed) → synthetic ZHA endpoint ID
 _CONTACT_EP = {ch: 200 + ch for ch in range(1, NUM_CONTACTS + 1)}
+# Sensor endpoint IDs
+_TEMP_INTERNAL_EP = 221   # TemperatureMeasurement — c4.z2x.tmpi
+_TEMP_EXTERNAL_EP = 222   # TemperatureMeasurement — c4.z2x.tmpe (external probe)
+_HUMIDITY_EP      = 223   # RelativeHumidity       — c4.z2x.thumi
 
 # C4 APS application header signatures (bytes 4:6 of raw APS payload)
 _C4_APS_HDR_PROFILES = (b'\x5d\xc2', b'\x5c\xc2', b'\x5e\xc2')
@@ -311,6 +322,124 @@ class C4Contact5Cluster(C4ContactCluster):
 
 
 # ---------------------------------------------------------------------------
+# Temperature / humidity sensor clusters  (EPs 221, 222, 223)
+# ---------------------------------------------------------------------------
+
+class C4TempCluster(CustomCluster, TemperatureMeasurement):
+    """TemperatureMeasurement cluster backed by C4-Z2IO-ZP sensor data.
+
+    ZCL measured_value unit is 0.01 °C (int16).  Conversion from C4 encoding:
+      raw (centikelvins integer) → ZCL = raw − 27315
+
+    Example: raw=0x71f8 (29176) → 29176 − 27315 = 1861 → 18.61 °C
+    Probe-absent sentinel: raw=0x5b13 (23315) → −4000 → −40.00 °C
+    """
+
+    _SUCCESS = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
+
+    def _handler(self) -> C4Z2IOZPHandler | None:
+        return _C4_Z2IO_HANDLER_MAP.get(str(self.endpoint.device.ieee).lower())
+
+    def _raw_value(self) -> int | None:
+        """Return the raw centikelvins integer for this sensor channel."""
+        raise NotImplementedError
+
+    async def read_attributes(self, attributes,
+                              allow_cache=False, only_cache=False, manufacturer=None):
+        mv_id = TemperatureMeasurement.AttributeDefs.measured_value.id
+        results, failures = {}, {}
+        for attr in attributes:
+            attr_id = (self.find_attribute(attr).id if isinstance(attr, str)
+                       else int(attr))
+            key = attr if isinstance(attr, str) else attr_id
+            if attr_id == mv_id:
+                raw = self._raw_value()
+                if raw is not None:
+                    zcl_val = raw - 27315   # centikelvins → 0.01 °C
+                    self._update_attribute(mv_id, zcl_val)
+                    results[key] = zcl_val
+                else:
+                    failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
+            else:
+                failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
+        return results, failures
+
+    async def bind(self):
+        return [ZCLStatus.SUCCESS]
+
+    async def configure_reporting(self, *args, **kwargs):
+        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
+
+    async def configure_reporting_multiple(self, records, *args, **kwargs):
+        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
+                for _ in range(len(records) if records else 1)]
+
+
+class C4TempInternalCluster(C4TempCluster):
+    """Internal temperature sensor (c4.z2x.tmpi) on EP 221."""
+
+    def _raw_value(self) -> int | None:
+        h = self._handler()
+        return h._temp_internal_raw if h else None
+
+
+class C4TempExternalCluster(C4TempCluster):
+    """External probe temperature (c4.z2x.tmpe) on EP 222.
+
+    Reports −40 °C (ZCL −4000) when no probe is connected (sentinel 0x5b13).
+    """
+
+    def _raw_value(self) -> int | None:
+        h = self._handler()
+        return h._temp_external_raw if h else None
+
+
+class C4HumidityCluster(CustomCluster, RelativeHumidity):
+    """RelativeHumidity cluster backed by c4.z2x.thumi sensor data.
+
+    ZCL measured_value unit is 0.01 % RH (uint16).  Conversion from C4:
+      raw (integer) / 100 = % RH  →  ZCL = raw  (no scaling needed)
+
+    Example: raw=0x1993 (6547) → 6547 / 100 = 65.47 % RH → ZCL = 6547
+    """
+
+    _SUCCESS = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
+
+    def _handler(self) -> C4Z2IOZPHandler | None:
+        return _C4_Z2IO_HANDLER_MAP.get(str(self.endpoint.device.ieee).lower())
+
+    async def read_attributes(self, attributes,
+                              allow_cache=False, only_cache=False, manufacturer=None):
+        mv_id = RelativeHumidity.AttributeDefs.measured_value.id
+        results, failures = {}, {}
+        for attr in attributes:
+            attr_id = (self.find_attribute(attr).id if isinstance(attr, str)
+                       else int(attr))
+            key = attr if isinstance(attr, str) else attr_id
+            if attr_id == mv_id:
+                h = self._handler()
+                raw = h._humidity_raw if h else None
+                if raw is not None:
+                    self._update_attribute(mv_id, raw)
+                    results[key] = raw
+                else:
+                    failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
+            else:
+                failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
+        return results, failures
+
+    async def bind(self):
+        return [ZCLStatus.SUCCESS]
+
+    async def configure_reporting(self, *args, **kwargs):
+        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
+
+    async def configure_reporting_multiple(self, records, *args, **kwargs):
+        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
+                for _ in range(len(records) if records else 1)]
+
+
+# ---------------------------------------------------------------------------
 # C4Z2IOCluster — EP 197 (C4_PROFILE_BUTTON, skipped by ZHA entity discovery)
 # ---------------------------------------------------------------------------
 
@@ -384,6 +513,35 @@ class C4Z2IOCluster(CustomCluster):
                 )
                 return
 
+    def _push_temp(self, ep_id: int, raw: int) -> None:
+        """Push a raw centikelvins value into a C4TempCluster attribute cache.
+
+        ZCL measured_value = raw − 27315  (converts centikelvins → 0.01 °C).
+        """
+        ep = self.endpoint.device.endpoints.get(ep_id)
+        if ep is None:
+            return
+        zcl_val = raw - 27315
+        mv_id = TemperatureMeasurement.AttributeDefs.measured_value.id
+        for cluster in ep.in_clusters.values():
+            if isinstance(cluster, C4TempCluster):
+                cluster._update_attribute(mv_id, zcl_val)
+                return
+
+    def _push_humidity(self, raw: int) -> None:
+        """Push a raw humidity value into the C4HumidityCluster attribute cache.
+
+        ZCL measured_value = raw  (raw already in 0.01 % RH units).
+        """
+        ep = self.endpoint.device.endpoints.get(_HUMIDITY_EP)
+        if ep is None:
+            return
+        mv_id = RelativeHumidity.AttributeDefs.measured_value.id
+        for cluster in ep.in_clusters.values():
+            if isinstance(cluster, C4HumidityCluster):
+                cluster._update_attribute(mv_id, raw)
+                return
+
     # ------------------------------------------------------------------
     # ZHA cluster hooks
     # ------------------------------------------------------------------
@@ -437,6 +595,9 @@ class C4Z2IOCluster(CustomCluster):
 
         prev_relays   = list(handler._relay_on)
         prev_contacts = list(handler._contact_state)
+        prev_temp_i   = handler._temp_internal_raw
+        prev_temp_e   = handler._temp_external_raw
+        prev_humi     = handler._humidity_raw
 
         handler.handle_packet(_strip_c4_header(bytes(args)))
 
@@ -447,6 +608,15 @@ class C4Z2IOCluster(CustomCluster):
         for ch_idx in range(NUM_CONTACTS):
             if handler._contact_state[ch_idx] != prev_contacts[ch_idx]:
                 self._push_contact(ch_idx + 1, handler._contact_state[ch_idx])
+
+        if handler._temp_internal_raw != prev_temp_i and handler._temp_internal_raw is not None:
+            self._push_temp(_TEMP_INTERNAL_EP, handler._temp_internal_raw)
+
+        if handler._temp_external_raw != prev_temp_e and handler._temp_external_raw is not None:
+            self._push_temp(_TEMP_EXTERNAL_EP, handler._temp_external_raw)
+
+        if handler._humidity_raw != prev_humi and handler._humidity_raw is not None:
+            self._push_humidity(handler._humidity_raw)
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +721,28 @@ class Control4Z2IOZP(CustomDevice):
                 PROFILE_ID:  zha.PROFILE_ID,
                 DEVICE_TYPE: 0x000C,
                 INPUT_CLUSTERS:  [C4Contact5Cluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            # EPs 221 / 222 — temperature sensor entities
+            # ZHA device type 0x0302 = Temperature Sensor
+            221: {
+                PROFILE_ID:  zha.PROFILE_ID,
+                DEVICE_TYPE: 0x0302,
+                INPUT_CLUSTERS:  [C4TempInternalCluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            222: {
+                PROFILE_ID:  zha.PROFILE_ID,
+                DEVICE_TYPE: 0x0302,
+                INPUT_CLUSTERS:  [C4TempExternalCluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            # EP 223 — humidity sensor entity
+            # ZHA device type 0x0307 = Humidity Sensor (non-standard; 0x000C also works)
+            223: {
+                PROFILE_ID:  zha.PROFILE_ID,
+                DEVICE_TYPE: 0x0307,
+                INPUT_CLUSTERS:  [C4HumidityCluster],
                 OUTPUT_CLUSTERS: [],
             },
         },

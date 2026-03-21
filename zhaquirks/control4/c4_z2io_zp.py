@@ -39,7 +39,11 @@ Full property table
   c4.z2x.zepid  R      str           Zigbee Extended PAN ID
   c4.sy.fwv     R      str           Firmware version (observed: 1.2.0)
   c4.sy.blv     R      decimal       Bootloader version (observed: 3)
-  c4.z2x.thumi  annc   hex           Uptime counter (~5 s cadence) — ignored
+  c4.z2x.tmpi   R/annc hex           Internal temperature — centikelvins; °C = (raw × 0.01) − 273.15
+  c4.z2x.tmpe   R/annc hex           External probe temperature — same encoding;
+                                      0x5b13 (233.15 K = −40 °C) is the sentinel for probe not connected
+  c4.z2x.thumi  R/annc hex           Relative humidity — raw / 100 = % RH;
+                                      announced unsolicited ~every 5 min, also gettable
 
 Relay actuation protocol (from open/close capture)
 ───────────────────────────────────────────────────
@@ -129,6 +133,14 @@ DOOR_UNKNOWN = "unknown"
 # ── Relay pulse duration (ms) — observed ~440-500 ms in capture ───────────────
 DEFAULT_PULSE_MS = 500
 
+# ── Sensor encoding ───────────────────────────────────────────────────────────
+# Temperatures are reported as centikelvins: °C = (raw × 0.01) − 273.15
+# ZCL TemperatureMeasurement measured_value unit is 0.01 °C, so:
+#   ZCL value = raw − 27315
+# Humidity: raw / 100 = % RH; ZCL RelativeHumidity unit is 0.01% RH, so:
+#   ZCL value = raw  (no conversion needed)
+TEMP_NO_PROBE_RAW = 0x5b13   # 233.15 K = −40 °C — sentinel for disconnected probe
+
 
 class C4Z2IOZPHandler:
     """Per-device handler for a Control4 C4-Z2IO-ZP IO / garage door module.
@@ -190,9 +202,14 @@ class C4Z2IOZPHandler:
         self.zigbee_nid:   str | None = None
         self.zigbee_chan:  int | None = None
         self.link_density: str | None = None
-        self.timer_pi:     str | None = None
-        self.timer_pe:     str | None = None
-        self.uptime:       str | None = None
+
+        # Sensor state: raw integer values as received from the device, or None
+        # before the first reading arrives.  Conversion formulas:
+        #   °C  = (raw × 0.01) − 273.15   →  ZCL = raw − 27315
+        #   %RH = raw / 100                →  ZCL = raw
+        self._temp_internal_raw: int | None = None   # c4.z2x.tmpi
+        self._temp_external_raw: int | None = None   # c4.z2x.tmpe
+        self._humidity_raw:      int | None = None   # c4.z2x.thumi
 
     # ── Sequence counter ──────────────────────────────────────────────────────
 
@@ -352,6 +369,12 @@ class C4Z2IOZPHandler:
             _LOGGER.debug(
                 "C4-Z2IO-ZP [%s]: relay %d pulse ticks=%d", self.ieee, ch + 1, ticks
             )
+        elif prop == _PROP_TMPI and values:
+            self._update_temp_internal(values[0])
+        elif prop == _PROP_TMPE and values:
+            self._update_temp_external(values[0])
+        elif prop == _PROP_THUMI and values:
+            self._update_humidity(values[0])
 
     def _on_announce(self, parts: list[str]) -> None:
         """Handle  0t[seq] sa [prop] [value]"""
@@ -364,7 +387,12 @@ class C4Z2IOZPHandler:
             self._update_contacts(value)
         elif prop == _PROP_RLS and value is not None:
             self._update_relays(value)
-        # Ignore _PROP_THUMI (uptime heartbeat)
+        elif prop == _PROP_TMPI and value is not None:
+            self._update_temp_internal(value)
+        elif prop == _PROP_TMPE and value is not None:
+            self._update_temp_external(value)
+        elif prop == _PROP_THUMI and value is not None:
+            self._update_humidity(value)
 
     # ── State helpers ─────────────────────────────────────────────────────────
 
@@ -432,6 +460,59 @@ class C4Z2IOZPHandler:
                 "changes": changed,
                 "rls_raw": rls,
             })
+
+    def _update_temp_internal(self, value_str: str) -> None:
+        """Parse tmpi hex centikelvins and update internal temperature state."""
+        try:
+            raw = int(value_str, 16)
+        except ValueError:
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: bad tmpi value %r", self.ieee, value_str
+            )
+            return
+        self._temp_internal_raw = raw
+        temp_c = raw * 0.01 - 273.15
+        _LOGGER.debug(
+            "C4-Z2IO-ZP [%s]: tmpi raw=0x%04x → %.2f °C", self.ieee, raw, temp_c
+        )
+
+    def _update_temp_external(self, value_str: str) -> None:
+        """Parse tmpe hex centikelvins and update external probe temperature state."""
+        try:
+            raw = int(value_str, 16)
+        except ValueError:
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: bad tmpe value %r", self.ieee, value_str
+            )
+            return
+        self._temp_external_raw = raw
+        if raw == TEMP_NO_PROBE_RAW:
+            _LOGGER.debug(
+                "C4-Z2IO-ZP [%s]: tmpe sentinel (probe not connected)", self.ieee
+            )
+        else:
+            temp_c = raw * 0.01 - 273.15
+            _LOGGER.debug(
+                "C4-Z2IO-ZP [%s]: tmpe raw=0x%04x → %.2f °C", self.ieee, raw, temp_c
+            )
+
+    def _update_humidity(self, value_str: str) -> None:
+        """Parse thumi hex value and update humidity state.
+
+        Encoding: raw / 100 = % RH  (e.g. 0x1993 = 6547 → 65.47 % RH)
+        """
+        try:
+            raw = int(value_str, 16)
+        except ValueError:
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: bad thumi value %r", self.ieee, value_str
+            )
+            return
+        self._humidity_raw = raw
+        _LOGGER.debug(
+            "C4-Z2IO-ZP [%s]: thumi raw=0x%04x → %.2f %% RH",
+            self.ieee, raw, raw / 100.0,
+        )
 
     def _fire_event(self, sub_type: str, extra: dict) -> None:
         """Fire a zha_event on the HA bus."""
@@ -542,12 +623,12 @@ class C4Z2IOZPHandler:
         return resp is not None and resp.get("status") == "000"
 
     async def poll_state(self) -> None:
-        """Query the device for current contact and relay state."""
+        """Query the device for current contact, relay, and sensor state."""
         _LOGGER.debug("C4-Z2IO-ZP [%s]: polling state", self.ieee)
-        for prop in (_PROP_CTS, _PROP_RLS):
+        for prop in (_PROP_CTS, _PROP_RLS, _PROP_TMPI, _PROP_TMPE, _PROP_THUMI):
             seq, data = self._get_frame(prop)
             await self._send(seq, data)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.3)
 
     async def read_device_info(self) -> dict:
         """Query all read-only device info properties."""
@@ -569,10 +650,10 @@ class C4Z2IOZPHandler:
             "zigbee_epid":  self.zigbee_epid,
             "zigbee_nid":   self.zigbee_nid,
             "zigbee_chan":  self.zigbee_chan,
-            "timer_pi":     self.timer_pi,
-            "timer_pe":     self.timer_pe,
-            "uptime":       self.uptime,
-            "link_density": self.link_density,
+            "temp_internal_raw": self._temp_internal_raw,
+            "temp_external_raw": self._temp_external_raw,
+            "humidity_raw":      self._humidity_raw,
+            "link_density":      self.link_density,
         }
 
     async def configure_device(self) -> None:
