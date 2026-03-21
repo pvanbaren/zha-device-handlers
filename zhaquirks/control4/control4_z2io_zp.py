@@ -37,10 +37,13 @@ _QUIRK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _QUIRK_DIR not in sys.path:
     sys.path.insert(0, _QUIRK_DIR)
 
+from typing import Any, Final
+
+import zigpy.types as t
 from zigpy.profiles import zha
 from zigpy.quirks import CustomCluster, CustomDevice
 from zigpy.zcl import foundation
-from zigpy.zcl.foundation import Status as ZCLStatus
+from zigpy.zcl.foundation import Status as ZCLStatus, ZCLAttributeDef
 from zigpy.zcl.clusters.general import (
     BinaryInput, Identify, OnOff,
 )
@@ -67,6 +70,8 @@ from c4_helpers import (
     C4_PROFILE_NETWORK,
     C4DimmerManufCluster,
     C4ConfigCluster,
+    get_z2io_opt_mode,
+    set_z2io_opt_mode,
 )
 from c4_basic_cluster import C4BasicCluster
 from c4_hooks import _C4_MODEL_QUIRK_MAP
@@ -74,9 +79,11 @@ from c4_hooks import _C4_MODEL_QUIRK_MAP
 from c4_z2io_zp import (
     C4Z2IOZPHandler,
     async_setup_services,
+    DEFAULT_OPT_MODE,
     DOOR_CLOSED,
-    NUM_CONTACTS,
-    NUM_RELAYS,
+    NUM_CONTACTS_HW,
+    NUM_RELAYS_HW,
+    OPT_MODES,
     TEMP_NO_PROBE_RAW,
 )
 
@@ -94,11 +101,118 @@ _C4_Z2IO_CONFIGURED: set[str] = set()
 # Relay channel (1-indexed) → synthetic ZHA endpoint ID
 _RELAY_EP = {1: 211, 2: 212}
 # Contact channel (1-indexed) → synthetic ZHA endpoint ID
-_CONTACT_EP = {ch: 200 + ch for ch in range(1, NUM_CONTACTS + 1)}
+_CONTACT_EP = {ch: 200 + ch for ch in range(1, NUM_CONTACTS_HW + 1)}
 # Sensor endpoint IDs
 _TEMP_INTERNAL_EP = 221   # TemperatureMeasurement — c4.z2x.tmpi
 _TEMP_EXTERNAL_EP = 222   # TemperatureMeasurement — c4.z2x.tmpe (external probe)
 _HUMIDITY_EP      = 223   # RelativeHumidity       — c4.z2x.thumi
+_IO_MODE_EP       = 230   # User-configurable IO mode select entity
+
+
+# ---------------------------------------------------------------------------
+# IO Mode select entity — enum + LocalDataCluster
+# ---------------------------------------------------------------------------
+
+class IoMode(t.enum8):
+    """C4-Z2IO-ZP IO operating mode (c4.z2x.opt)."""
+    Relays_2_SPST       = 0x01  # 2 relays (SPST), 0 contacts
+    Contacts_4          = 0x02  # 0 relays, 4 contacts
+    Relay_1_Contacts_2  = 0x03  # 1 relay (SPST) + 2 contacts
+    Relay_1_SPDT        = 0x04  # 1 relay (SPDT), 0 contacts
+    Relay_1_DPST        = 0x05  # 1 relay (DPST), 0 contacts
+
+
+# Manufacturer-specific cluster ID for the IO mode setting
+_IO_MODE_CLUSTER_ID = 0xFC44   # "C4" in hex nibbles
+
+
+class C4IoModeCluster(CustomCluster):
+    """Virtual cluster exposing the IO mode as a user-configurable select entity.
+
+    This is a local-only cluster: reads/writes do not generate ZCL frames on
+    the wire.  When the user changes the value in the HA UI, write_attributes()
+    sends the C4 proprietary command via the handler and persists the setting.
+    """
+    cluster_id = _IO_MODE_CLUSTER_ID
+    name = "C4 IO Mode"
+    ep_attribute = "c4_io_mode"
+
+    class AttributeDefs(foundation.BaseAttributeDefs):
+        io_mode: Final = ZCLAttributeDef(
+            id=0x0000,
+            type=IoMode,
+            is_manufacturer_specific=True,
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Seed the attribute cache with the persisted (or default) value
+        ieee_str = str(self.endpoint.device.ieee).lower()
+        persisted = get_z2io_opt_mode(ieee_str)
+        mode = persisted if persisted is not None else DEFAULT_OPT_MODE
+        self._update_attribute(
+            self.AttributeDefs.io_mode.id, IoMode(mode),
+        )
+
+    async def read_attributes(
+        self, attributes, allow_cache=False, only_cache=False, manufacturer=None,
+    ):
+        """Return the current IO mode from the handler (or cache)."""
+        ieee_str = str(self.endpoint.device.ieee).lower()
+        handler = _C4_Z2IO_HANDLER_MAP.get(ieee_str)
+        mode_val = handler.opt_mode if handler else DEFAULT_OPT_MODE
+        persisted = get_z2io_opt_mode(ieee_str)
+        if persisted is not None:
+            mode_val = persisted
+        self._update_attribute(self.AttributeDefs.io_mode.id, IoMode(mode_val))
+        return {self.AttributeDefs.io_mode.id: IoMode(mode_val)}, {}
+
+    async def write_attributes(
+        self,
+        attributes: dict[str | int, Any],
+        manufacturer=None,
+    ) -> list[list[foundation.WriteAttributesStatusRecord]]:
+        """Handle IO mode changes from the HA UI."""
+        records = []
+        for attr, value in attributes.items():
+            attr_def = self.find_attribute(attr)
+            if attr_def.id == self.AttributeDefs.io_mode.id:
+                new_mode = int(value)
+                if new_mode not in OPT_MODES:
+                    records.append(
+                        foundation.WriteAttributesStatusRecord(
+                            ZCLStatus.INVALID_VALUE
+                        )
+                    )
+                    continue
+
+                ieee_str = str(self.endpoint.device.ieee).lower()
+                handler = _C4_Z2IO_HANDLER_MAP.get(ieee_str)
+
+                if handler is not None:
+                    await handler.change_opt_mode(new_mode)
+
+                # Persist
+                set_z2io_opt_mode(ieee_str, new_mode)
+
+                # Update attribute cache so the UI reflects the new value
+                self._update_attribute(attr_def.id, IoMode(new_mode))
+
+                _LOGGER.info(
+                    "C4-Z2IO-ZP [%s]: IO mode set to %d via HA UI",
+                    ieee_str, new_mode,
+                )
+                records.append(
+                    foundation.WriteAttributesStatusRecord(ZCLStatus.SUCCESS)
+                )
+            else:
+                records.append(
+                    foundation.WriteAttributesStatusRecord(
+                        ZCLStatus.UNSUPPORTED_ATTRIBUTE
+                    )
+                )
+        return [records]
+
 
 # C4 APS application header signatures (bytes 4:6 of raw APS payload)
 _C4_APS_HDR_PROFILES = (b'\x5d\xc2', b'\x5c\xc2', b'\x5e\xc2')
@@ -215,10 +329,16 @@ class C4RelayCluster(CustomCluster, OnOff):
 
         # Ensure the handler exists in the shared map.
         if ieee_str not in _C4_Z2IO_HANDLER_MAP:
+            persisted_mode = get_z2io_opt_mode(ieee_str)
+            opt_mode = persisted_mode if persisted_mode is not None else DEFAULT_OPT_MODE
             _C4_Z2IO_HANDLER_MAP[ieee_str] = C4Z2IOZPHandler(
-                ieee_str, device, _get_hass(device), device.application
+                ieee_str, device, _get_hass(device), device.application,
+                opt_mode=opt_mode,
             )
-            _LOGGER.info("C4 Z2IO: created handler for %s from relay bind()", ieee_str)
+            _LOGGER.info(
+                "C4 Z2IO: created handler for %s from relay bind() opt_mode=%d",
+                ieee_str, opt_mode,
+            )
 
         # Run provisioning exactly once per session per device.
         if ieee_str not in _C4_Z2IO_CONFIGURED:
@@ -480,12 +600,18 @@ class C4Z2IOCluster(CustomCluster):
             self._handler = existing
             return existing
         device  = self.endpoint.device
+        # Load persisted IO mode (falls back to DEFAULT_OPT_MODE)
+        persisted_mode = get_z2io_opt_mode(ieee_str)
+        opt_mode = persisted_mode if persisted_mode is not None else DEFAULT_OPT_MODE
         handler = C4Z2IOZPHandler(
-            ieee_str, device, _get_hass(device), device.application
+            ieee_str, device, _get_hass(device), device.application,
+            opt_mode=opt_mode,
         )
         _C4_Z2IO_HANDLER_MAP[ieee_str] = handler
         self._handler = handler
-        _LOGGER.info("C4 Z2IO: created handler for %s", ieee_str)
+        _LOGGER.info(
+            "C4 Z2IO: created handler for %s opt_mode=%d", ieee_str, opt_mode,
+        )
         return handler
 
     # ------------------------------------------------------------------
@@ -601,11 +727,11 @@ class C4Z2IOCluster(CustomCluster):
 
         handler.handle_packet(_strip_c4_header(bytes(args)))
 
-        for ch_idx in range(NUM_RELAYS):
+        for ch_idx in range(handler.num_relays):
             if handler._relay_on[ch_idx] != prev_relays[ch_idx]:
                 self._push_relay(ch_idx + 1, handler._relay_on[ch_idx])
 
-        for ch_idx in range(NUM_CONTACTS):
+        for ch_idx in range(handler.num_contacts):
             if handler._contact_state[ch_idx] != prev_contacts[ch_idx]:
                 self._push_contact(ch_idx + 1, handler._contact_state[ch_idx])
 
@@ -743,6 +869,13 @@ class Control4Z2IOZP(CustomDevice):
                 PROFILE_ID:  zha.PROFILE_ID,
                 DEVICE_TYPE: 0x0307,
                 INPUT_CLUSTERS:  [C4HumidityCluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            # EP 230 — IO mode configuration (select entity)
+            230: {
+                PROFILE_ID:  zha.PROFILE_ID,
+                DEVICE_TYPE: 0x0000,
+                INPUT_CLUSTERS:  [C4IoModeCluster],
                 OUTPUT_CLUSTERS: [],
             },
         },

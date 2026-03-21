@@ -27,7 +27,12 @@ Full property table
   c4.z2x.rls    R      hex bitmask   Relay status   (bit N = relay N+1) — READ only
   c4.z2x.rlc N  W      decimal ch    Relay latch Close (energize relay N)  ← from capture
   c4.z2x.rlo N  W      decimal ch    Relay latch Open  (de-energize relay N) ← from capture
-  c4.z2x.opt    R/W    decimal       Options:  1 = momentary relay mode
+  c4.z2x.opt    R/W    decimal       IO mode:
+                                        1 = 2 relays (SPST)
+                                        2 = 4 contacts (binary sensors)
+                                        3 = 1 relay (SPST) + 2 contacts
+                                        4 = 1 relay (SPDT)
+                                        5 = 1 relay (DPST)
   c4.z2x.ctd    R/W    ch ms-hex     Contact debounce (ch, duration in hex ms)
   c4.z2x.rlp N  R/W    ch ticks      Relay pulse duration for relay N
                           observed: ch=01 ticks=02 and ch=02 ticks=02
@@ -108,8 +113,33 @@ _PROP_TMPE  = "c4.z2x.tmpe"
 _PROP_THUMI = "c4.z2x.thumi"
 
 # ── Hardware limits ────────────────────────────────────────────────────────────
-NUM_RELAYS   = 2   # two relay outputs
-NUM_CONTACTS = 5   # five contact inputs (bits 0-4 of cts bitmask)
+NUM_RELAYS_HW   = 2   # physical relay outputs on the board
+NUM_CONTACTS_HW = 5   # physical contact input bits (0-4 of cts bitmask)
+
+# ── IO mode (c4.z2x.opt) ────────────────────────────────────────────────────
+# Configurable options for contacts and relays:
+#   opt=1  →  2 relays (SPST), 0 contacts
+#   opt=2  →  0 relays, 4 contacts
+#   opt=3  →  1 relay (SPST), 2 contacts
+#   opt=4  →  1 relay (SPDT), 0 contacts
+#   opt=5  →  1 relay (DPST), 0 contacts
+#
+# Each mode is described by (num_relays, num_contacts).
+OPT_MODE_RELAYS_2      = 1   # 2 relays (SPST)
+OPT_MODE_CONTACTS_4    = 2   # 4 contacts
+OPT_MODE_RELAY_1_CTS_2 = 3   # 1 relay (SPST) + 2 contacts
+OPT_MODE_RELAY_SPDT    = 4   # 1 relay (SPDT)
+OPT_MODE_RELAY_DPST    = 5   # 1 relay (DPST)
+
+OPT_MODES: dict[int, tuple[int, int]] = {
+    #  opt: (relays, contacts)
+    OPT_MODE_RELAYS_2:      (2, 0),
+    OPT_MODE_CONTACTS_4:    (0, 4),
+    OPT_MODE_RELAY_1_CTS_2: (1, 2),
+    OPT_MODE_RELAY_SPDT:    (1, 0),
+    OPT_MODE_RELAY_DPST:    (1, 0),
+}
+DEFAULT_OPT_MODE = OPT_MODE_CONTACTS_4
 
 # ── HA events ─────────────────────────────────────────────────────────────────
 ZHA_EVENT       = "zha_event"
@@ -118,11 +148,11 @@ C4_DEVICE_TYPE  = "C4-Z2IO-ZP"
 # ── Wiring polarity (per contact channel, 0-indexed) ─────────────────────────
 # False = NC (bit=1 → OPEN)   True = NO (bit=1 → CLOSED)
 CONTACT_BIT_CLOSED: dict[int, bool] = {
-    0: False,  # contact input 1 — default NC
-    1: False,
-    2: False,
-    3: False,
-    4: False,
+    0: True,   # contact input 1 — NO wiring (bit=1 → CLOSED)
+    1: True,
+    2: True,
+    3: True,
+    4: True,
 }
 
 # ── Door state constants ───────────────────────────────────────────────────────
@@ -152,19 +182,33 @@ class C4Z2IOZPHandler:
     • handle_packet() called for every frame from this device.
     • trigger_relay(N) / poll_state() called by services / automations.
 
-    Two relay outputs
-    ─────────────────
-    Relay 1 (index 0, bit 0 of rls bitmask) and Relay 2 (index 1, bit 1).
+    IO modes (c4.z2x.opt)
+    ─────────────────────
+    The device supports three configurable IO modes, selected by the ``opt``
+    parameter passed to __init__ (and written to the device during provisioning):
 
+      opt=1  →  2 relays (SPST), 0 contacts
+      opt=2  →  0 relays, 4 contacts (binary sensors)
+      opt=3  →  1 relay (SPST), 2 contacts
+      opt=4  →  1 relay (SPDT), 0 contacts
+      opt=5  →  1 relay (DPST), 0 contacts
+
+    The number of relay and contact entities exposed is determined by the mode.
+    ``num_relays`` and ``num_contacts`` are set at init time accordingly.
+
+    Relay outputs
+    ─────────────
     Actuation uses an explicit rlc/rlo sequence (from open/close capture):
       1. Send  c4.z2x.rlc N  — energize relay N
       2. Wait  DEFAULT_PULSE_MS
       3. Send  c4.z2x.rlo N  — de-energize relay N
     The device announces rls changes for both steps.
+    Only relay channels within the mode's relay count are accepted.
 
-    Five contact inputs
-    ───────────────────
-    Bits 0-4 of the cts bitmask. Unconnected inputs read 1 (pull-up → 0x1f).
+    Contact inputs
+    ──────────────
+    Bits 0..N-1 of the cts bitmask, where N = num_contacts for the mode.
+    Unconnected inputs float high via pull-ups.
     Default wiring is NC; flip CONTACT_BIT_CLOSED[N] for NO sensors.
     """
 
@@ -176,11 +220,26 @@ class C4Z2IOZPHandler:
         device,       # zigpy.device.Device
         hass,         # homeassistant.core.HomeAssistant
         app,          # ZHA application (zigpy AppBase)
+        opt_mode: int = DEFAULT_OPT_MODE,
     ) -> None:
         self.ieee   = ieee
         self._dev   = device
         self._hass  = hass
         self._app   = app
+
+        # IO mode — determines how many relays/contacts are active
+        if opt_mode not in OPT_MODES:
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: unknown opt_mode %d, falling back to %d",
+                ieee, opt_mode, DEFAULT_OPT_MODE,
+            )
+            opt_mode = DEFAULT_OPT_MODE
+        self.opt_mode: int = opt_mode
+        self.num_relays, self.num_contacts = OPT_MODES[opt_mode]
+        _LOGGER.info(
+            "C4-Z2IO-ZP [%s]: opt_mode=%d → %d relay(s), %d contact(s)",
+            ieee, opt_mode, self.num_relays, self.num_contacts,
+        )
 
         self._seq: int = 0x0040
 
@@ -188,8 +247,8 @@ class C4Z2IOZPHandler:
         self._pending: dict[int, asyncio.Future] = {}
 
         # Contact state per channel (0-indexed), relay state per channel
-        self._contact_state: list[str]  = [DOOR_UNKNOWN] * NUM_CONTACTS
-        self._relay_on:      list[bool] = [False] * NUM_RELAYS
+        self._contact_state: list[str]  = [DOOR_UNKNOWN] * self.num_contacts
+        self._relay_on:      list[bool] = [False] * self.num_relays
         self._cts_raw: int = 0
         self._rls_raw: int = 0
 
@@ -232,6 +291,14 @@ class C4Z2IOZPHandler:
 
     # ── Frame transmission ────────────────────────────────────────────────────
 
+    def _controller_ready(self) -> bool:
+        """Return False if the zigpy ApplicationController is known to be down."""
+        is_running = getattr(self._app, "is_running", None)
+        if is_running is not None:
+            return bool(is_running)
+        # Fallback: treat as ready if the attribute doesn't exist
+        return True
+
     async def _send(
         self,
         seq: int,
@@ -241,6 +308,18 @@ class C4Z2IOZPHandler:
     ) -> dict | None:
         loop = asyncio.get_running_loop()
         future: asyncio.Future | None = None
+
+        # Pre-flight: skip the send if the radio controller isn't running.
+        # This avoids cascading error logs when ZHA is starting or the
+        # coordinator is reconnecting — the command simply can't be delivered.
+        if not self._controller_ready():
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: skipping TX (seq=0x%04x) — "
+                "Zigbee controller is not running",
+                self.ieee, seq,
+            )
+            self._pending.pop(seq, None)
+            return None
 
         if await_response:
             future = loop.create_future()
@@ -258,7 +337,15 @@ class C4Z2IOZPHandler:
                 expect_reply=False,
             )
         except Exception as exc:
-            _LOGGER.error("C4-Z2IO-ZP [%s]: TX error: %s", self.ieee, exc)
+            exc_str = str(exc)
+            if "not running" in exc_str.lower():
+                _LOGGER.warning(
+                    "C4-Z2IO-ZP [%s]: TX skipped (seq=0x%04x) — "
+                    "Zigbee controller not running: %s",
+                    self.ieee, seq, exc,
+                )
+            else:
+                _LOGGER.error("C4-Z2IO-ZP [%s]: TX error: %s", self.ieee, exc)
             self._pending.pop(seq, None)
             return None
 
@@ -409,7 +496,7 @@ class C4Z2IOZPHandler:
         self._cts_raw = cts
         changed: list[dict] = []
 
-        for ch in range(NUM_CONTACTS):
+        for ch in range(self.num_contacts):
             bit = bool(cts & (1 << ch))
             if CONTACT_BIT_CLOSED.get(ch, False):
                 new_state = DOOR_CLOSED if bit else DOOR_OPEN
@@ -445,7 +532,7 @@ class C4Z2IOZPHandler:
         self._rls_raw = rls
         changed: list[dict] = []
 
-        for ch in range(NUM_RELAYS):
+        for ch in range(self.num_relays):
             on = bool(rls & (1 << ch))
             if on != self._relay_on[ch]:
                 self._relay_on[ch] = on
@@ -516,6 +603,12 @@ class C4Z2IOZPHandler:
 
     def _fire_event(self, sub_type: str, extra: dict) -> None:
         """Fire a zha_event on the HA bus."""
+        if self._hass is None:
+            _LOGGER.debug(
+                "C4-Z2IO-ZP [%s]: _fire_event(%s) skipped — hass not available",
+                self.ieee, sub_type,
+            )
+            return
         self._hass.bus.fire(
             ZHA_EVENT,
             {
@@ -531,23 +624,36 @@ class C4Z2IOZPHandler:
 
     def contact_state(self, channel: int = 1) -> str:
         """Return 'open', 'closed', or 'unknown' for contact channel (1-indexed)."""
+        if self.num_contacts == 0 or channel < 1 or channel > self.num_contacts:
+            return DOOR_UNKNOWN
         return self._contact_state[channel - 1]
 
     def relay_active(self, channel: int = 1) -> bool:
         """True while relay N (1-indexed) is energised."""
+        if self.num_relays == 0 or channel < 1 or channel > self.num_relays:
+            return False
         return self._relay_on[channel - 1]
 
     # ── Public commands ───────────────────────────────────────────────────────
 
     async def close_relay(self, channel: int) -> bool:
-        """Energize relay N (1 or 2) via c4.z2x.rlc.
+        """Energize relay N via c4.z2x.rlc.
 
         Sends the latch-close command and waits for the device's 000 response.
         The device will announce rls with the relay bit set.
         Call open_relay() after your desired dwell time to release.
         """
-        if channel not in (1, 2):
-            _LOGGER.error("close_relay: channel must be 1 or 2, got %d", channel)
+        if self.num_relays == 0:
+            _LOGGER.error(
+                "C4-Z2IO-ZP [%s]: close_relay called but opt_mode=%d has no relays",
+                self.ieee, self.opt_mode,
+            )
+            return False
+        if channel < 1 or channel > self.num_relays:
+            _LOGGER.error(
+                "close_relay: channel must be 1..%d for opt_mode=%d, got %d",
+                self.num_relays, self.opt_mode, channel,
+            )
             return False
         seq, data = self._set_frame(_PROP_RLC, str(channel))
         resp = await self._send(seq, data)
@@ -559,13 +665,22 @@ class C4Z2IOZPHandler:
         return ok
 
     async def open_relay(self, channel: int) -> bool:
-        """De-energize relay N (1 or 2) via c4.z2x.rlo.
+        """De-energize relay N via c4.z2x.rlo.
 
         Sends the latch-open command and waits for the 000 response.
         The device will announce rls 00 when the relay is released.
         """
-        if channel not in (1, 2):
-            _LOGGER.error("open_relay: channel must be 1 or 2, got %d", channel)
+        if self.num_relays == 0:
+            _LOGGER.error(
+                "C4-Z2IO-ZP [%s]: open_relay called but opt_mode=%d has no relays",
+                self.ieee, self.opt_mode,
+            )
+            return False
+        if channel < 1 or channel > self.num_relays:
+            _LOGGER.error(
+                "open_relay: channel must be 1..%d for opt_mode=%d, got %d",
+                self.num_relays, self.opt_mode, channel,
+            )
             return False
         seq, data = self._set_frame(_PROP_RLO, str(channel))
         resp = await self._send(seq, data)
@@ -579,7 +694,7 @@ class C4Z2IOZPHandler:
     async def trigger_relay(
         self, channel: int = 1, pulse_ms: int = DEFAULT_PULSE_MS
     ) -> bool:
-        """Pulse relay N (1 or 2) using the rlc / rlo sequence observed in capture.
+        """Pulse relay N using the rlc / rlo sequence observed in capture.
 
         Sequence:
           1. Send c4.z2x.rlc N  (energize)
@@ -590,8 +705,17 @@ class C4Z2IOZPHandler:
         The default pulse width of 500 ms matches the ~440-500 ms observed in
         the open/close Wireshark capture.
         """
-        if channel not in (1, 2):
-            _LOGGER.error("trigger_relay: channel must be 1 or 2, got %d", channel)
+        if self.num_relays == 0:
+            _LOGGER.error(
+                "C4-Z2IO-ZP [%s]: trigger_relay called but opt_mode=%d has no relays",
+                self.ieee, self.opt_mode,
+            )
+            return False
+        if channel < 1 or channel > self.num_relays:
+            _LOGGER.error(
+                "trigger_relay: channel must be 1..%d for opt_mode=%d, got %d",
+                self.num_relays, self.opt_mode, channel,
+            )
             return False
 
         _LOGGER.info(
@@ -616,6 +740,12 @@ class C4Z2IOZPHandler:
 
     async def set_relay_pulse(self, channel: int, ticks: int) -> bool:
         """Set the momentary pulse duration for relay N (provisioning parameter)."""
+        if self.num_relays == 0 or channel < 1 or channel > self.num_relays:
+            _LOGGER.error(
+                "set_relay_pulse: channel %d invalid for opt_mode=%d (%d relay(s))",
+                channel, self.opt_mode, self.num_relays,
+            )
+            return False
         seq, data = self._set_frame(
             _PROP_RLP, f"{channel:02x}", f"{ticks:02x}"
         )
@@ -623,9 +753,21 @@ class C4Z2IOZPHandler:
         return resp is not None and resp.get("status") == "000"
 
     async def poll_state(self) -> None:
-        """Query the device for current contact, relay, and sensor state."""
-        _LOGGER.debug("C4-Z2IO-ZP [%s]: polling state", self.ieee)
-        for prop in (_PROP_CTS, _PROP_RLS, _PROP_TMPI, _PROP_TMPE, _PROP_THUMI):
+        """Query the device for current contact, relay, and sensor state.
+
+        Only polls properties relevant to the current IO mode:
+          - cts  if num_contacts > 0
+          - rls  if num_relays > 0
+          - tmpi, tmpe, thumi  always (sensors are mode-independent)
+        """
+        _LOGGER.debug("C4-Z2IO-ZP [%s]: polling state (opt_mode=%d)", self.ieee, self.opt_mode)
+        props: list[str] = []
+        if self.num_contacts > 0:
+            props.append(_PROP_CTS)
+        if self.num_relays > 0:
+            props.append(_PROP_RLS)
+        props.extend((_PROP_TMPI, _PROP_TMPE, _PROP_THUMI))
+        for prop in props:
             seq, data = self._get_frame(prop)
             await self._send(seq, data)
             await asyncio.sleep(0.3)
@@ -643,6 +785,9 @@ class C4Z2IOZPHandler:
             await asyncio.sleep(0.05)
 
         return {
+            "opt_mode":     self.opt_mode,
+            "num_relays":   self.num_relays,
+            "num_contacts": self.num_contacts,
             "fw_version":   self.fw_version,
             "bl_version":   self.bl_version,
             "zigbee_mac":   self.zigbee_mac,
@@ -656,60 +801,116 @@ class C4Z2IOZPHandler:
             "link_density":      self.link_density,
         }
 
+    async def change_opt_mode(self, new_mode: int) -> bool:
+        """Change the IO mode at runtime and send the command to the device.
+
+        Updates internal state and sends c4.z2x.opt to the device.
+        Returns True on success.  Does NOT re-provision (call configure_device
+        for a full re-init, or re-interview the device in ZHA to update entities).
+        """
+        if new_mode not in OPT_MODES:
+            _LOGGER.error(
+                "C4-Z2IO-ZP [%s]: invalid opt_mode %d", self.ieee, new_mode,
+            )
+            return False
+
+        old_mode = self.opt_mode
+        self.opt_mode = new_mode
+        self.num_relays, self.num_contacts = OPT_MODES[new_mode]
+
+        # Resize state arrays to match new mode
+        self._contact_state = [DOOR_UNKNOWN] * self.num_contacts
+        self._relay_on      = [False] * self.num_relays
+        self._cts_raw = 0
+        self._rls_raw = 0
+
+        _LOGGER.info(
+            "C4-Z2IO-ZP [%s]: opt_mode changed %d → %d (%d relay(s), %d contact(s))",
+            self.ieee, old_mode, new_mode, self.num_relays, self.num_contacts,
+        )
+
+        # Send to device
+        seq, data = self._set_frame(_PROP_OPT, str(new_mode))
+        resp = await self._send(seq, data)
+        ok = bool(resp and resp.get("status") == "000")
+        if not ok:
+            _LOGGER.warning(
+                "C4-Z2IO-ZP [%s]: opt set to %d TX response: %s",
+                self.ieee, new_mode, resp,
+            )
+
+        # Poll fresh state for the new mode
+        await self.poll_state()
+        return ok
+
     async def configure_device(self) -> None:
         """Two-pass provisioning sequence matching the observed provisioning capture.
 
         Pass 1 — configuration & discovery:
-          1.  opt = 1            (momentary relay mode, set during provisioning)
-          2.  ctd = 1, 1f4      (contact 1 debounce = 500 ms)
-          3.  rlp query 1 / 2   (read relay pulse durations)
-          4.  ana0 / ana1        (queried, returns n01 — expected)
-          5.  Full device info read
-          6.  zpc = 348          (set Zigbee poll counter)
+          1.  ctd = 1, 1f4      (contact 1 debounce = 500 ms)
+          2.  opt = <mode>       (IO mode: 1=2 relays, 2=4 contacts, 3=1 relay+2 contacts)
+          3.  cts / rls          (read initial state)
+          4.  rlp query 1 / 2   (read relay pulse durations — if mode has relays)
+          5.  ana0 / ana1        (queried, returns n01 — expected)
+          6.  Full device info read
+          7.  zpc = 348          (set Zigbee poll counter)
 
         Pass 2 — verification:
-          7.  ctd = 1, 1f4      (re-apply debounce)
-          8.  opt = 1           (re-apply momentary mode)
-          9.  cts / rls / opt   (verify state)
-          10. rlp 1, rlp 2      (re-read pulse durations)
-          11. ana0               (n01 expected)
+          8.  ctd = 1, 1f4      (re-apply debounce)
+          9.  opt = <mode>      (re-apply IO mode)
+          10. cts / rls / opt   (verify state)
+          11. rlp 1, rlp 2      (re-read pulse durations — if mode has relays)
+          12. ana0               (n01 expected)
 
         Note: relay actuation during normal operation uses rlc/rlo (not rls),
-        regardless of the opt=1 setting applied here.
+        regardless of the opt setting applied here.
         """
-        _LOGGER.info("C4-Z2IO-ZP [%s]: provisioning (pass 1)", self.ieee)
+        opt_str = str(self.opt_mode)
+        _LOGGER.info(
+            "C4-Z2IO-ZP [%s]: provisioning (pass 1) opt_mode=%s",
+            self.ieee, opt_str,
+        )
         delay = 0.05
 
-        # 1. Momentary relay mode
-        seq, data = self._set_frame(_PROP_OPT, "1")
-        resp = await self._send(seq, data)
-        if not (resp and resp.get("status") == "000"):
-            _LOGGER.warning("C4-Z2IO-ZP [%s]: opt set failed: %s", self.ieee, resp)
-        await asyncio.sleep(delay)
-
-        # 2. Contact debounce — channel 1, 0x1f4 = 500 ms
+        # 1. Contact debounce — channel 1, 0x1f4 = 500 ms
         seq, data = self._set_frame(_PROP_CTD, "1", "1f4")
         resp = await self._send(seq, data)
         if not (resp and resp.get("status") == "000"):
             _LOGGER.warning("C4-Z2IO-ZP [%s]: ctd set failed: %s", self.ieee, resp)
         await asyncio.sleep(delay)
 
-        # 3. Relay pulse durations
-        for ch in (1, 2):
-            seq, data = self._get_frame(_PROP_RLP, str(ch))
-            await self._send(seq, data)
-            await asyncio.sleep(delay)
+        # 2. IO mode
+        seq, data = self._set_frame(_PROP_OPT, opt_str)
+        resp = await self._send(seq, data)
+        if not (resp and resp.get("status") == "000"):
+            _LOGGER.warning("C4-Z2IO-ZP [%s]: opt set failed: %s", self.ieee, resp)
+        await asyncio.sleep(delay)
 
-        # 4. Ana inputs (n01 expected)
+        # 3. Read initial contact and relay state
+        seq, data = self._get_frame(_PROP_CTS)
+        await self._send(seq, data)
+        await asyncio.sleep(delay)
+        seq, data = self._get_frame(_PROP_RLS)
+        await self._send(seq, data)
+        await asyncio.sleep(delay)
+
+        # 4. Relay pulse durations (only meaningful when mode has relays)
+        if self.num_relays > 0:
+            for ch in range(1, self.num_relays + 1):
+                seq, data = self._get_frame(_PROP_RLP, str(ch))
+                await self._send(seq, data)
+                await asyncio.sleep(delay)
+
+        # 5. Ana inputs (n01 expected)
         for prop in (_PROP_ANA0, _PROP_ANA1):
             seq, data = self._get_frame(prop)
             await self._send(seq, data, timeout=2.0)
             await asyncio.sleep(delay)
 
-        # 5. Full device info
+        # 6. Full device info
         await self.read_device_info()
 
-        # 6. Zigbee poll counter
+        # 7. Zigbee poll counter
         seq, data = self._set_frame(_PROP_ZPC, "348")
         await self._send(seq, data)
         await asyncio.sleep(delay)
@@ -721,7 +922,7 @@ class C4Z2IOZPHandler:
         await self._send(seq, data)
         await asyncio.sleep(delay)
 
-        seq, data = self._set_frame(_PROP_OPT, "1")
+        seq, data = self._set_frame(_PROP_OPT, opt_str)
         await self._send(seq, data)
         await asyncio.sleep(delay)
 
@@ -731,11 +932,12 @@ class C4Z2IOZPHandler:
         await self._send(seq, data)
         await asyncio.sleep(delay)
 
-        # Re-query rlp and ana
-        for ch in (1, 2):
-            seq, data = self._get_frame(_PROP_RLP, str(ch))
-            await self._send(seq, data)
-            await asyncio.sleep(delay)
+        # Re-query rlp and ana (only if mode has relays)
+        if self.num_relays > 0:
+            for ch in range(1, self.num_relays + 1):
+                seq, data = self._get_frame(_PROP_RLP, str(ch))
+                await self._send(seq, data)
+                await asyncio.sleep(delay)
 
         seq, data = self._get_frame(_PROP_ANA0)
         await self._send(seq, data, timeout=2.0)
@@ -773,7 +975,7 @@ async def async_setup_services(hass, handler_map: dict[str, "C4Z2IOZPHandler"]) 
 
     TRIGGER_SCHEMA = vol.Schema({
         vol.Required(ATTR_IEEE):                       cv.string,
-        vol.Optional(ATTR_RELAY,    default=1):        vol.In([1, 2]),
+        vol.Optional(ATTR_RELAY,    default=1):        vol.All(int, vol.Range(min=1, max=2)),
         vol.Optional(ATTR_PULSE_MS, default=DEFAULT_PULSE_MS):
             vol.All(int, vol.Range(min=100, max=5000)),
     })

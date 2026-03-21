@@ -175,6 +175,46 @@ def set_model_for_ieee(key: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# IEEE → Z2IO device settings persistence
+# ---------------------------------------------------------------------------
+_C4_Z2IO_SETTINGS_PATH = "/config/.storage/c4_z2io_settings.json"
+
+
+def _load_z2io_settings() -> dict:
+    try:
+        with open(_C4_Z2IO_SETTINGS_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+_C4_Z2IO_SETTINGS: dict[str, dict] = _load_z2io_settings()
+
+
+def _save_z2io_settings(data: dict) -> None:
+    os.makedirs(os.path.dirname(_C4_Z2IO_SETTINGS_PATH), exist_ok=True)
+    _LOGGER.info("C4: saving Z2IO settings to %s: %s", _C4_Z2IO_SETTINGS_PATH, data)
+    with open(_C4_Z2IO_SETTINGS_PATH, "w") as f:
+        json.dump(data, f)
+
+
+def get_z2io_opt_mode(ieee: str) -> int | None:
+    """Return the persisted opt_mode for a Z2IO device, or None if not set."""
+    entry = _C4_Z2IO_SETTINGS.get(ieee)
+    if isinstance(entry, dict):
+        return entry.get("opt_mode")
+    return None
+
+
+def set_z2io_opt_mode(ieee: str, mode: int) -> None:
+    """Persist the opt_mode for a Z2IO device."""
+    entry = _C4_Z2IO_SETTINGS.setdefault(ieee, {})
+    entry["opt_mode"] = mode
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _save_z2io_settings, dict(_C4_Z2IO_SETTINGS))
+
+
+# ---------------------------------------------------------------------------
 # Frame / command helpers
 # ---------------------------------------------------------------------------
 
