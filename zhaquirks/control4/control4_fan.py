@@ -65,8 +65,6 @@ from c4_helpers import (
     C4_PROVISION_DELAY,
     DIMMER_BUTTON_MAP,
     _build_c4_frame,
-    _c4_report_controller_identity,
-    _send_many_to_one_route_request,
     C4ConfigCluster,
     C4DimmerManufCluster,
 )
@@ -138,23 +136,8 @@ class C4FanControlCluster(CustomCluster, Fan):
         return result, failure
 
     async def bind(self):
-        """Send coordinator identity, MTORR, bind, and fan provisioning commands."""
+        """Bind and send fan provisioning commands."""
         device = self.endpoint.device
-
-        try:
-            await _c4_report_controller_identity(
-                device, "identify_pre_bind_Fan",
-                zcl_seq=device.get_sequence(),
-            )
-            _LOGGER.info("C4 Fan: identity sent")
-        except Exception as e:
-            _LOGGER.warning("C4 Fan: identity send failed (%s), continuing", e)
-
-        try:
-            await _send_many_to_one_route_request(device.application)
-            _LOGGER.info("C4 Fan: MTORR sent")
-        except Exception as e:
-            _LOGGER.warning("C4 Fan: MTORR failed (%s), continuing", e)
 
         try:
             result = await super().bind()

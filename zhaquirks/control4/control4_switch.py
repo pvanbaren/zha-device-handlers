@@ -36,8 +36,6 @@ from c4_helpers import (
     C4_PROFILE_BUTTON,
     C4_PROFILE_NETWORK,
     DIMMER_BUTTON_MAP,
-    _c4_report_controller_identity,
-    _send_many_to_one_route_request,
     C4DimmerManufCluster,
     C4ConfigCluster,
 )
@@ -63,28 +61,6 @@ class C4SwitchOnOff(CustomCluster, OnOff):
     _SUCCESS   = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
     async def bind(self):
-        try:
-            await _c4_report_controller_identity(
-                self.endpoint.device,
-                "identify_pre_bind_SwitchOnOff",
-                zcl_seq=self.endpoint.device.get_sequence(),
-            )
-            _LOGGER.info("C4 SwitchOnOff: identity sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 SwitchOnOff: identity send failed (%s), continuing", e
-            )
-
-        try:
-            await _send_many_to_one_route_request(
-                self.endpoint.device.application
-            )
-            _LOGGER.info("C4 SwitchOnOff: many-to-one route request sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 SwitchOnOff: route request failed (%s), continuing", e
-            )
-
         try:
             result = await super().bind()
             _LOGGER.info("C4 SwitchOnOff: bind succeeded")

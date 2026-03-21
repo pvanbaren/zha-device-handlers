@@ -62,8 +62,6 @@ from c4_helpers import (
     C4_PROFILE_NETWORK,
     KC120277_BUTTON_EP_MAP,
     KC120277_BUTTON_MAP,
-    _c4_report_controller_identity,
-    _send_many_to_one_route_request,
     C4DimmerManufCluster,
     C4ConfigCluster,
 )
@@ -91,27 +89,6 @@ class C4SceneControllerIdentifyCluster(CustomCluster, Identify):
     """
 
     async def bind(self):
-        device = self.endpoint.device
-        try:
-            await _c4_report_controller_identity(
-                device,
-                "kc120277_identify_bind",
-                zcl_seq=device.get_sequence(),
-            )
-            _LOGGER.info("C4 KC120277: coordinator identity sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 KC120277: identity send failed in bind() (%s)", e
-            )
-
-        try:
-            await _send_many_to_one_route_request(device.application)
-            _LOGGER.info("C4 KC120277: MTORR sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 KC120277: MTORR failed in bind() (%s)", e
-            )
-
         try:
             result = await super().bind()
             _LOGGER.info("C4 KC120277: Identify bind succeeded")

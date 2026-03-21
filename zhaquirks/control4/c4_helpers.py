@@ -449,8 +449,13 @@ def _c4_sniff_model(device, inner: bytes) -> None:
     """Peek into a ZCL Report Attributes payload for attr 0x0007 (model string).
 
     Called from the broadcast intercept patch before any cluster routing.
-    On success, caches the model in the IEEE→model store and, if device.model
-    is not yet set, writes it to device.model and schedules DB persistence.
+    On success:
+      - Caches the model in the IEEE→model store.
+      - If device.model is not yet set, writes it and schedules DB persistence.
+      - Schedules a coordinator identity (ReportAttributes) + MTORR handshake.
+        This replaces the per-cluster bind() handshake: the handshake is now
+        triggered reactively each time the device announces its model number,
+        which happens on join, rejoin, and periodic keep-alive broadcasts.
     """
     try:
         hdr, remaining = foundation.ZCLHeader.deserialize(inner)
@@ -468,6 +473,36 @@ def _c4_sniff_model(device, inner: bytes) -> None:
                         device.ieee, model,
                     )
                     set_model_for_ieee(str(device.ieee), model)
+
+                    # Send coordinator identity + MTORR in response to every
+                    # model-bearing ReportAttributes from this device.
+                    async def _send_handshake(dev=device, mod=model):
+                        try:
+                            await _c4_report_controller_identity(
+                                dev,
+                                f"model_report_{mod}",
+                                zcl_seq=dev.get_sequence(),
+                            )
+                            _LOGGER.info(
+                                "C4 sniffer: identity sent for %s model=%r",
+                                dev.ieee, mod,
+                            )
+                        except Exception as e:
+                            _LOGGER.warning(
+                                "C4 sniffer: identity send failed for %s — %s",
+                                dev.ieee, e,
+                            )
+                        try:
+                            await _send_many_to_one_route_request(dev.application)
+                            _LOGGER.info(
+                                "C4 sniffer: MTORR sent for %s", dev.ieee
+                            )
+                        except Exception as e:
+                            _LOGGER.warning(
+                                "C4 sniffer: MTORR failed for %s — %s",
+                                dev.ieee, e,
+                            )
+                    asyncio.ensure_future(_send_handshake())
 
                 if not device.model or device.model in _INVALID_MODELS:
                     device.model = model
