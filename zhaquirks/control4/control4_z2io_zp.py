@@ -717,7 +717,23 @@ class C4Z2IOCluster(CustomCluster):
 
         if not self._polled_on_restart and not self._provisioned:
             self._polled_on_restart = True
-            asyncio.ensure_future(handler.poll_state())
+
+            async def _auto_configure(h=handler):
+                try:
+                    await h.configure_device()
+                    self._provisioned = True
+                    await h.poll_state()
+                    _LOGGER.info(
+                        "C4 Z2IO: auto-reconfigure on restart complete for %s",
+                        h.ieee,
+                    )
+                except Exception as exc:
+                    _LOGGER.error(
+                        "C4 Z2IO: auto-reconfigure failed for %s — %s",
+                        h.ieee, exc,
+                    )
+
+            asyncio.ensure_future(_auto_configure())
 
         prev_relays   = list(handler._relay_on)
         prev_contacts = list(handler._contact_state)
