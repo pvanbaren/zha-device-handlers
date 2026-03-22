@@ -125,7 +125,7 @@ class C4ButtonCluster(EventableCluster):
     # ------------------------------------------------------------------
 
     def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
-        _LOGGER.info("C4 button request: hdr=%s args=%s", hdr, args)
+        _LOGGER.debug("C4 button request: hdr=%s args=%s", hdr, args)
         self._process_raw(hdr, args)
 
     def handle_message(self, hdr, args):
@@ -155,7 +155,7 @@ class C4ButtonCluster(EventableCluster):
             return
 
         text = raw_bytes.decode("ascii", errors="replace").strip()
-        _LOGGER.info("C4 button text: %r", text)
+        _LOGGER.debug("C4 button text: %r", text)
 
         cmd = text.split()
         if len(cmd) >= 3:
@@ -328,13 +328,13 @@ class C4ButtonCluster(EventableCluster):
             level_cluster  = ep1.in_clusters.get(LevelControl.cluster_id)
 
             if button_id == 0x01 and click_count >= 1:
-                _LOGGER.info("C4 button sync: ON confirmed (btn=0x01 cc=%d)", click_count)
+                _LOGGER.debug("C4 button sync: ON confirmed (btn=0x01 cc=%d)", click_count)
                 if onoff_cluster is not None:
                     onoff_cluster.update_attribute(
                         OnOff.AttributeDefs.on_off.id, True
                     )
             elif button_id == 0x05 and click_count >= 1:
-                _LOGGER.info("C4 button sync: OFF confirmed (btn=0x05 cc=%d)", click_count)
+                _LOGGER.debug("C4 button sync: OFF confirmed (btn=0x05 cc=%d)", click_count)
                 if onoff_cluster is not None:
                     onoff_cluster.update_attribute(
                         OnOff.AttributeDefs.on_off.id, False

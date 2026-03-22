@@ -396,7 +396,7 @@ def _sync_ep1_level(device, level_raw: int, source="unknown"):
             return
         level_cluster = ep1.in_clusters.get(LevelControl.cluster_id)
         onoff_cluster = ep1.in_clusters.get(OnOff.cluster_id)
-        _LOGGER.info("C4 sync (%s): level=%d", source, level_raw)
+        _LOGGER.debug("C4 sync (%s): level=%d", source, level_raw)
         if level_cluster is not None:
             level_cluster.update_attribute(
                 LevelControl.AttributeDefs.current_level.id, level_raw
@@ -417,7 +417,7 @@ def _sync_ep1_onoff(device, is_on: bool, source="unknown"):
             return
         onoff_cluster = ep1.in_clusters.get(OnOff.cluster_id)
         if onoff_cluster is not None:
-            _LOGGER.info("C4 sync (%s): on_off=%s", source, is_on)
+            _LOGGER.debug("C4 sync (%s): on_off=%s", source, is_on)
             onoff_cluster.update_attribute(
                 OnOff.AttributeDefs.on_off.id, is_on
             )
@@ -436,7 +436,7 @@ def _sync_ep1_model(device, model: str, source="unknown"):
             return
         basic._update_attribute(Basic.AttributeDefs.model.id, model)
         basic._update_attribute(Basic.AttributeDefs.manufacturer.id, "Control4")
-        _LOGGER.info("C4 sync (%s): basic model=%r", source, model)
+        _LOGGER.debug("C4 sync (%s): basic model=%r", source, model)
     except Exception:
         _LOGGER.warning("C4 sync model (%s): failed", source, exc_info=True)
 
@@ -620,7 +620,7 @@ class C4ConfigCluster(CustomCluster):
                 )
                 return
 
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 config handle_message: ep=%s cmd=0x%02x args_hex=%s",
             self.endpoint.endpoint_id,
             hdr.command_id if hdr else -1,
@@ -674,7 +674,7 @@ class C4ConfigCluster(CustomCluster):
             return super().handle_message(hdr, args)
 
         # All other C4-proprietary commands — log and discard
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 config ep %s: ignoring unhandled cmd=0x%02x args=%s",
             self.endpoint.endpoint_id, hdr.command_id,
             args.hex() if isinstance(args, (bytes, bytearray)) else repr(args),

@@ -125,7 +125,7 @@ class C4BasicCluster(CustomCluster, Basic):
         if c4_map:
             model, manuf = self._resolve_c4_identity()
 
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 Basic read_attributes: ieee=%s raw device.model=%r "
                 "device.manufacturer=%r → resolved model=%r manuf=%r",
                 self.endpoint.device.ieee,
@@ -137,7 +137,7 @@ class C4BasicCluster(CustomCluster, Basic):
             if not model and not only_cache:
                 model, manuf = await self._fetch_c4_model()
 
-            _LOGGER.info("C4 Basic: resolved identity model=%r manuf=%r", model, manuf)
+            _LOGGER.debug("C4 Basic: resolved identity model=%r manuf=%r", model, manuf)
 
             if self._ATTR_MODEL in c4_map:
                 k = c4_map[self._ATTR_MODEL]

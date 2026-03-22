@@ -158,7 +158,7 @@ try:
                 elif not isinstance(msg, (bytes, bytearray)):
                     msg = bytes(msg)
 
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 intercept: profile=0x%04X cluster=0x%04X "
                     "src_ep=%s dst_ep=%s ieee=%s len=%d",
                     packet.profile_id, packet.cluster_id,
@@ -196,7 +196,7 @@ try:
                     if target_cluster is not None:
                         try:
                             target_cluster.handle_message(None, msg)
-                            _LOGGER.warning(
+                            _LOGGER.debug(
                                 "C4 intercept: handle_message succeeded on ep %s cluster %s",
                                 target_ep_id, type(target_cluster).__name__,
                             )
@@ -206,12 +206,12 @@ try:
                                 target_ep_id, e2,
                             )
                     else:
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "C4 intercept: no marked or matching cluster on ep %s",
                             target_ep_id,
                         )
                 else:
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "C4 intercept: no ep %s on %s", target_ep_id, device_ieee
                     )
 
@@ -391,7 +391,7 @@ try:
                                 _c4_sniff_model(device, inner)
 
                         if device.is_initialized:
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "C4 broadcast intercept: profile=0x%04X "
                                 "src_ep=%s nwk=0x%04X",
                                 packet.profile_id,
