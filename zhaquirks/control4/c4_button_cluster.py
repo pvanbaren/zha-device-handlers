@@ -494,7 +494,16 @@ class C4SceneControllerButtonCluster(C4ButtonCluster):
 # ---------------------------------------------------------------------------
 
 class C4DualOutletButtonCluster(C4SwitchButtonCluster):
-    """Button/state cluster for dual-outlet devices (LOZ-5S1-W)."""
+    """Button/state cluster for dual-outlet devices (LOZ-5S1-W).
+
+    Protocol (from Wireshark captures):
+      State announcements arrive as:
+        0t<chan> sa c4.dm.tc <outlet_idx> <level>\r\n
+      where outlet_idx is 00 or 01, level is 64 (ON) or 00 (OFF).
+
+      The c4.dmx.* namespaces used by dimmers/switches are NOT used by
+      the outlet — only c4.dm.tc (state announce) and c4.dm.tv (set).
+    """
 
     name         = "Control4 Dual Outlet Button Events"
     ep_attribute = "c4_dual_outlet_buttons"
@@ -517,6 +526,38 @@ class C4DualOutletButtonCluster(C4SwitchButtonCluster):
                 onoff.update_attribute(OnOff.AttributeDefs.on_off.id, is_on)
         except Exception:
             _LOGGER.warning("C4 dual outlet: sync failed", exc_info=True)
+
+    def _handle_state_announcement(self, namespace, data):
+        """Handle c4.dm.tc state announcements from the outlet.
+
+        Format: sa c4.dm.tc <outlet_idx_hex> <level_hex>
+        outlet_idx: 00 or 01
+        level: 64 (=100 decimal, ON) or 00 (OFF)
+        """
+        if namespace == "c4.dm.tc":
+            if len(data) >= 2:
+                try:
+                    outlet_idx = int(data[0], 16)
+                    level = int(data[1], 16)
+                    is_on = level > 0
+                    _LOGGER.info(
+                        "C4 dual outlet: c4.dm.tc outlet=%d level=%d on=%s",
+                        outlet_idx, level, is_on,
+                    )
+                    self._sync_onoff_for_outlet(outlet_idx, is_on)
+                except (ValueError, TypeError) as e:
+                    _LOGGER.warning(
+                        "C4 dual outlet: failed to parse c4.dm.tc: data=%s (%s)",
+                        data, e,
+                    )
+            else:
+                _LOGGER.warning(
+                    "C4 dual outlet: c4.dm.tc too few fields: %s", data
+                )
+            return
+
+        # Fall through to parent for any other namespaces (e.g. c4.dmx.*)
+        super()._handle_state_announcement(namespace, data)
 
     def _sync_cc_event(self, button_id, click_count):
         # On dual outlet devices, cc button_id is the outlet index

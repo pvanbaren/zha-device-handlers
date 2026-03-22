@@ -1,6 +1,6 @@
 """ZHA quirk for the Control4 LOZ-5S1-W Switched Outlet.
 
-Hardware: single switched outlet with physical on/off paddle button.
+Hardware: dual switched outlet with physical on/off paddle button.
 
 Zigbee endpoints after interview:
   1   — ZHA profile, device_type 0x0101, clusters [Basic … OnOff Level Time]
@@ -12,11 +12,35 @@ Zigbee endpoints after interview:
 EP 198 (profile 0xC25E) is absent on APD120/SW120, making it the reliable
 signature discriminator.
 
+Protocol (confirmed from Wireshark captures):
+  Model string: "c4:outlet_switch:loz-5s1-w", firmware "03.19.49"
+  Custom cluster 0xC25C with text-based ASCII commands over ZigBee APS.
+
+  SET command (coordinator → device, C4_PROFILE_BUTTON EP 1→1):
+    0s<chan4> c4.dm.tv <outlet> 00 <level>\r\n
+    outlet: 00 = outlet index 0, 01 = outlet index 1
+    level:  64 (hex 100) = ON, 00 = OFF
+
+  RESPONSE (device → coordinator, EP 197):
+    0r<chan4> 000
+
+  STATE ANNOUNCE (device → coordinator, EP 197):
+    0t<chan4> sa c4.dm.tc <outlet> <level>\r\n
+    outlet: echoes the outlet index from the SET command
+    level:  64 = ON, 00 = OFF
+
+  SET→RESPONSE→ANNOUNCE cycle completes in ~200 ms.
+  Coordinator sends SET 2–3× via different mesh relay paths for reliability.
+
+  On rejoin the device broadcasts ZCL Report Attributes (cluster 0x005D)
+  containing model/firmware; coordinator re-syncs state with SET commands.
+
 Outlet-specific notes:
   • attr 0x0000 on EP 2 cluster 0x0001 is an on/off flag (not a dim level).
-  • Provisioning sequence unknown — only coordinator identity is sent.
+  • On/off commands use C4 serial protocol (c4.dm.tv), NOT standard ZCL OnOff.
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -59,7 +83,10 @@ from c4_helpers import (
     C4_PROFILE_BUTTON,
     C4_PROFILE_NETWORK,
     C4_PROFILE_OUTLET,
+    C4_PROVISION_DELAY,
+    OUTLET_EP_MAP,
     _INVALID_MODELS,
+    _build_c4_frame,
     _sync_ep1_onoff,
     C4ConfigCluster,
     C4DimmerManufCluster,
@@ -223,7 +250,15 @@ class C4OutletStateCluster(CustomCluster):
 # ---------------------------------------------------------------------------
 
 class C4OutletOnOff(CustomCluster, OnOff):
-    """OnOff cluster for the LOZ-5S1-W outlet (outlet 0 / EP 1)."""
+    """OnOff cluster for the LOZ-5S1-W outlet.
+
+    Sends on/off commands using the C4 serial protocol:
+      0s<chan4> c4.dm.tv <outlet_idx> 00 <level>\r\n
+    on C4_PROFILE_BUTTON (0xC25C), EP 1→1.
+
+    OUTLET_IDX is the C4 protocol outlet selector (00 or 01).
+    Subclass overrides OUTLET_IDX for the second outlet.
+    """
 
     cluster_id = OnOff.cluster_id
     OUTLET_IDX = 0
@@ -250,37 +285,32 @@ class C4OutletOnOff(CustomCluster, OnOff):
             for _ in range(count)
         ]]
 
-    async def command(
-        self,
-        command_id,
-        *args,
-        manufacturer=None,
-        expect_reply=False,
-        tsn=None,
-        **kwargs,
-    ):
-        _LOGGER.info("C4 OutletOnOff: cmd=%s", command_id)
-        result = await super().command(
-            command_id, *args,
-            manufacturer=manufacturer, expect_reply=expect_reply,
-            tsn=tsn, **kwargs,
-        )
-        return result if result is not None else self._SUCCESS
+    async def _send_c4_outlet_command(self, is_on: bool) -> None:
+        """Send c4.dm.tv <outlet> 00 <level> on C4_PROFILE_BUTTON, EP 1→1.
 
+        Command format (confirmed from capture):
+          0s<chan4> c4.dm.tv <outlet2> 00 <level2>\r\n
+        where outlet is the 2-digit hex outlet index and level is 64 (ON)
+        or 00 (OFF).
+        """
+        device = self.endpoint.device
+        chan = device.get_sequence() & 0xFFFF
+        level = 0x64 if is_on else 0x00
+        cmd = f"0s{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00 {level:02x}"
+        data = _build_c4_frame(0, cmd)
 
-class C4Outlet1OnOff(C4OutletOnOff):
-    """OnOff cluster for the second outlet (outlet 1 / EP 11).
-
-    Sends a raw ZCL on/off command to EP 2 on the device and optimistically
-    updates the local cache since no device report arrives on this synthetic EP.
-    """
-
-    OUTLET_IDX = 1
-
-    async def bind(self):
-        """Skip bind — EP 1 OutletOnOff already handles identity / routing."""
-        _LOGGER.info("C4 Outlet1OnOff: skipping bind (handled by EP 1)")
-        return self._SUCCESS
+        _LOGGER.info("C4 OutletOnOff: sending %s", cmd)
+        try:
+            await device.request(
+                profile=C4_PROFILE_BUTTON,
+                cluster=C4_CLUSTER_ID,
+                src_ep=1, dst_ep=1,
+                sequence=device.get_sequence(),
+                data=data,
+                expect_reply=False,
+            )
+        except Exception as exc:
+            _LOGGER.warning("C4 OutletOnOff: c4.dm.tv send failed: %s", exc)
 
     async def command(
         self,
@@ -293,11 +323,9 @@ class C4Outlet1OnOff(C4OutletOnOff):
     ):
         if command_id == OnOff.ServerCommandDefs.toggle.id:
             cached = self.get("on_off")
-            return await self.command(
+            command_id = (
                 OnOff.ServerCommandDefs.off.id
-                if cached else OnOff.ServerCommandDefs.on.id,
-                manufacturer=manufacturer, expect_reply=expect_reply,
-                tsn=tsn, **kwargs,
+                if cached else OnOff.ServerCommandDefs.on.id
             )
 
         if command_id in (
@@ -305,33 +333,34 @@ class C4Outlet1OnOff(C4OutletOnOff):
             OnOff.ServerCommandDefs.off.id,
         ):
             is_on = command_id == OnOff.ServerCommandDefs.on.id
-            zcl_seq = self.endpoint.device.get_sequence() & 0xFF
-            data = bytes([0x01, zcl_seq, command_id])
-            _LOGGER.info(
-                "C4 Outlet1OnOff: ZCL cmd=0x%02x → EP 2, data=%s",
-                command_id, data.hex(),
-            )
-            try:
-                await self.endpoint.device.request(
-                    profile=zha.PROFILE_ID,
-                    cluster=OnOff.cluster_id,
-                    src_ep=1, dst_ep=2,
-                    sequence=self.endpoint.device.get_sequence(),
-                    data=data,
-                    expect_reply=False,
-                )
-            except Exception as exc:
-                _LOGGER.warning("C4 Outlet1OnOff: send failed: %s", exc)
-
-            # Optimistic update — device will never report on synthetic EP 11
+            await self._send_c4_outlet_command(is_on)
+            # Optimistic update — device will confirm via c4.dm.tc announce
             self._update_attribute(OnOff.AttributeDefs.on_off.id, is_on)
             return self._SUCCESS
 
-        return await super(C4OutletOnOff, self).command(
+        _LOGGER.info("C4 OutletOnOff: unhandled cmd=%s, passing through", command_id)
+        result = await super().command(
             command_id, *args,
             manufacturer=manufacturer, expect_reply=expect_reply,
             tsn=tsn, **kwargs,
         )
+        return result if result is not None else self._SUCCESS
+
+
+class C4Outlet1OnOff(C4OutletOnOff):
+    """OnOff cluster for the second outlet (outlet 1 / EP 11).
+
+    Same C4 serial protocol as C4OutletOnOff but with OUTLET_IDX=1,
+    so commands target the second physical outlet:
+      0s<chan4> c4.dm.tv 01 00 <level>\r\n
+    """
+
+    OUTLET_IDX = 1
+
+    async def bind(self):
+        """Skip bind — EP 1 OutletOnOff already handles identity / routing."""
+        _LOGGER.info("C4 Outlet1OnOff: skipping bind (handled by EP 1)")
+        return self._SUCCESS
 
 
 # ---------------------------------------------------------------------------
