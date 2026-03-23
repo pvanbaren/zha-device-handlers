@@ -3,6 +3,7 @@
 EP layout:
   1        — ZHA Non-Color Scene Controller (no light entity)
   2        — virtual, C4ConfigCluster
+  3        — virtual, C4LEDCluster (per-button LED color/mode control)
   196      — C4 network, C4ConfigCluster
   197      — C4 button, C4SceneControllerButtonCluster (routing hub only)
   200–207  — virtual per-button Event entities (one per physical button)
@@ -70,6 +71,7 @@ from c4_button_cluster import (
     C4SceneControllerButtonCluster,
     _KC120277_BUTTON_CLUSTERS,
 )
+from c4_led_cluster import C4LEDCluster, C4_LED_CLUSTER_ID
 from c4_hooks import _C4_MODEL_QUIRK_MAP
 
 _LOGGER = logging.getLogger(__name__)
@@ -171,6 +173,12 @@ class Control4KC120277SceneController(CustomDevice):
                 PROFILE_ID:      zha.PROFILE_ID,
                 DEVICE_TYPE:     0x0000,
                 INPUT_CLUSTERS:  [C4ConfigCluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            3: {
+                PROFILE_ID:      zha.PROFILE_ID,
+                DEVICE_TYPE:     0x0000,
+                INPUT_CLUSTERS:  [C4LEDCluster],
                 OUTPUT_CLUSTERS: [],
             },
             197: {
