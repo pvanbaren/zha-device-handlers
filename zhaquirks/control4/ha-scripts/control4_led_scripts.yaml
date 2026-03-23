@@ -1,0 +1,628 @@
+# Control4 LED Configuration Scripts for Home Assistant
+#
+# Add these to your scripts.yaml or paste into the HA Script editor (YAML mode).
+# Each script calls zha.issue_zigbee_cluster_command targeting the C4LEDCluster
+# on endpoint 3, cluster 0xFC43.
+#
+# Four scripts:
+#   1. control4_set_led_color    — set on/off colors for a single button
+#   2. control4_set_all_leds     — set all buttons to the same color
+#   3. control4_set_led_mode     — set LED behavioral mode for a single button
+#   4. control4_set_all_leds_individual — set on/off colors for all 12 buttons individually
+#
+# Prerequisites:
+#   - ZHA integration with Control4 device quirks loaded
+#   - C4LEDCluster present on endpoint 3 of the target device
+
+
+# ==========================================================================
+# 1. Set LED Color — single button
+# ==========================================================================
+control4_set_led_color:
+  alias: "Control4: Set LED Color"
+  description: >-
+    Set the on-color and off-color for a single button LED on a Control4 device.
+    Pick colors using the color wheel. The button is automatically configured
+    with mode=normal, behavior=on-indicator, color_mode=custom.
+  icon: mdi:led-on
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 device"
+      required: true
+      selector:
+        device:
+          integration: zha
+    button_id:
+      name: Button Number
+      description: >-
+        Button number (1-based). Dimmers/switches: 1=top, 2=bottom.
+        Light switches: 2=top, 5=bottom.
+        Scene controllers: 1=top through 6=bottom.
+        Backlights: 7–12 (backlight 1–6).
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 12
+          mode: slider
+    on_color:
+      name: On Color
+      description: "LED color when the load is ON"
+      required: true
+      default: [0, 0, 255]
+      selector:
+        color_rgb:
+    off_color:
+      name: Off Color
+      description: "LED color when the load is OFF (use black to turn LED off)"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: "{{ button_id | int(1) - 1 }}"
+          on_red: "{{ on_color[0] | int(0) }}"
+          on_green: "{{ on_color[1] | int(0) }}"
+          on_blue: "{{ on_color[2] | int(255) }}"
+          off_red: "{{ off_color[0] | int(0) }}"
+          off_green: "{{ off_color[1] | int(0) }}"
+          off_blue: "{{ off_color[2] | int(0) }}"
+
+
+# ==========================================================================
+# 2. Set All LEDs — same color on every button
+# ==========================================================================
+control4_set_all_leds:
+  alias: "Control4: Set All LEDs Same Color"
+  description: >-
+    Set every button LED on a Control4 device to the same on-color and off-color.
+    Useful for initialising all LEDs at once after pairing, or resetting them to
+    a uniform color.
+  icon: mdi:led-strip
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 device"
+      required: true
+      selector:
+        device:
+          integration: zha
+    num_buttons:
+      name: Number of Buttons
+      description: >-
+        How many buttons the device has.
+        Dimmers/switches/fans: 2. Scene controller (KC120277): 8. Keypads: up to 12.
+      required: true
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 12
+          mode: slider
+    on_color:
+      name: On Color
+      description: "LED color when the load is ON"
+      required: true
+      default: [0, 0, 255]
+      selector:
+        color_rgb:
+    off_color:
+      name: Off Color
+      description: "LED color when the load is OFF (use black to turn LED off)"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 2
+        command_type: server
+        params:
+          num_buttons: "{{ num_buttons | int(2) }}"
+          on_red: "{{ on_color[0] | int(0) }}"
+          on_green: "{{ on_color[1] | int(0) }}"
+          on_blue: "{{ on_color[2] | int(255) }}"
+          off_red: "{{ off_color[0] | int(0) }}"
+          off_green: "{{ off_color[1] | int(0) }}"
+          off_blue: "{{ off_color[2] | int(0) }}"
+
+
+# ==========================================================================
+# 3. Set LED Mode — behavioral control for a single button
+# ==========================================================================
+control4_set_led_mode:
+  alias: "Control4: Set LED Mode"
+  description: >-
+    Set the LED behavioral parameters for a single button. Use this to turn an
+    LED off entirely, switch between on-indicator and custom color modes, or
+    reset to factory defaults.
+  icon: mdi:led-variant-on
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 device"
+      required: true
+      selector:
+        device:
+          integration: zha
+    button_id:
+      name: Button Number
+      description: >-
+        Button number (1-based). Dimmers/switches: 1=top, 2=bottom.
+        Light switches: 2=top, 5=bottom.
+        Scene controllers: 1=top through 6=bottom.
+        Backlights: 7–12 (backlight 1–6).
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 12
+          mode: slider
+    mode:
+      name: LED Mode
+      description: "0 = normal (default)"
+      required: true
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    behavior:
+      name: LED Behavior
+      description: "0 = LED off, 1 = on-indicator (LED lights when load is active)"
+      required: true
+      default: 1
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "0"
+            - label: "On-indicator"
+              value: "1"
+    color_mode:
+      name: Color Mode
+      description: >-
+        0 = default, 1 = on-indicator (stock blue), 2 = custom RGB color
+        (requires colors set via Set LED Color script)
+      required: true
+      default: 1
+      selector:
+        select:
+          options:
+            - label: "Default"
+              value: "0"
+            - label: "On-indicator (blue)"
+              value: "1"
+            - label: "Custom RGB"
+              value: "2"
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 1
+        command_type: server
+        params:
+          button_id: "{{ button_id | int(1) - 1 }}"
+          mode: "{{ mode | int(0) }}"
+          behavior: "{{ behavior | int(1) }}"
+          color_mode: "{{ color_mode | int(1) }}"
+
+
+# ==========================================================================
+# 4. Set All LEDs Individually — per-button on/off colors for all 12 buttons
+# ==========================================================================
+control4_set_all_leds_individual:
+  alias: "Control4: Set All LEDs Individually"
+  description: >-
+    Set the on-color and off-color for every button LED on a Control4 device
+    individually. Each button gets its own color picker for the on state and
+    off state. Buttons beyond the device's physical count are harmlessly
+    ignored. Dimmers/switches/fans: buttons 1–2. Light switches: 2=top, 5=bottom.
+    Scene controllers: 1–6. Backlights: 7–12 (backlight 1–6).
+  icon: mdi:led-strip-variant
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 device"
+      required: true
+      selector:
+        device:
+          integration: zha
+    on_color_0:
+      name: "Button 1 — On Color"
+      description: "LED color for button 1 (top) when load is ON"
+      required: true
+      default: [0, 0, 255]
+      selector:
+        color_rgb:
+    off_color_0:
+      name: "Button 1 — Off Color"
+      description: "LED color for button 1 (top) when load is OFF"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_1:
+      name: "Button 2 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_1:
+      name: "Button 2 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_2:
+      name: "Button 3 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_2:
+      name: "Button 3 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_3:
+      name: "Button 4 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_3:
+      name: "Button 4 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_4:
+      name: "Button 5 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_4:
+      name: "Button 5 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_5:
+      name: "Button 6 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_5:
+      name: "Button 6 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_6:
+      name: "Backlight 1 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_6:
+      name: "Backlight 1 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_7:
+      name: "Backlight 2 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_7:
+      name: "Backlight 2 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_8:
+      name: "Backlight 3 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_8:
+      name: "Backlight 3 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_9:
+      name: "Backlight 4 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_9:
+      name: "Backlight 4 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_10:
+      name: "Backlight 5 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_10:
+      name: "Backlight 5 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    on_color_11:
+      name: "Backlight 6 — On Color"
+      required: true
+      default: [0, 0, 64]
+      selector:
+        color_rgb:
+    off_color_11:
+      name: "Backlight 6 — Off Color"
+      required: true
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 0
+          on_red: "{{ (on_color_0 | default([0,0,255]))[0] | int(0) }}"
+          on_green: "{{ (on_color_0 | default([0,0,255]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_0 | default([0,0,255]))[2] | int(255) }}"
+          off_red: "{{ (off_color_0 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_0 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_0 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 1
+          on_red: "{{ (on_color_1 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_1 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_1 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_1 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_1 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_1 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 2
+          on_red: "{{ (on_color_2 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_2 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_2 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_2 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_2 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_2 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 3
+          on_red: "{{ (on_color_3 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_3 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_3 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_3 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_3 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_3 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 4
+          on_red: "{{ (on_color_4 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_4 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_4 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_4 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_4 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_4 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 5
+          on_red: "{{ (on_color_5 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_5 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_5 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_5 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_5 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_5 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 6
+          on_red: "{{ (on_color_6 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_6 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_6 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_6 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_6 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_6 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 7
+          on_red: "{{ (on_color_7 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_7 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_7 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_7 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_7 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_7 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 8
+          on_red: "{{ (on_color_8 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_8 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_8 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_8 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_8 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_8 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 9
+          on_red: "{{ (on_color_9 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_9 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_9 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_9 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_9 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_9 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 10
+          on_red: "{{ (on_color_10 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_10 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_10 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_10 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_10 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_10 | default([0,0,0]))[2] | int(0) }}"
+    - delay:
+        milliseconds: 100
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 3
+        cluster_id: 64579
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          button_id: 11
+          on_red: "{{ (on_color_11 | default([0,0,64]))[0] | int(0) }}"
+          on_green: "{{ (on_color_11 | default([0,0,64]))[1] | int(0) }}"
+          on_blue: "{{ (on_color_11 | default([0,0,64]))[2] | int(255) }}"
+          off_red: "{{ (off_color_11 | default([0,0,0]))[0] | int(0) }}"
+          off_green: "{{ (off_color_11 | default([0,0,0]))[1] | int(0) }}"
+          off_blue: "{{ (off_color_11 | default([0,0,0]))[2] | int(0) }}"
