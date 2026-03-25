@@ -1,0 +1,164 @@
+# Control4 Ramp Rate Configuration Scripts for Home Assistant
+#
+# Add these to your scripts.yaml or paste into the HA Script editor (YAML mode).
+# Each script calls zha.issue_zigbee_cluster_command targeting the C4RampCluster
+# on endpoint 4, cluster 0xFC44 (64580 decimal).
+#
+# Two scripts:
+#   1. control4_set_ramp_rate    — set a single ramp time by type from a dropdown
+#   2. control4_set_on_off_ramps — set both on-ramp and off-ramp at once
+#
+# Prerequisites:
+#   - ZHA integration with Control4 device quirks loaded
+#   - C4RampCluster present on endpoint 4 of the target device
+#
+# Transition time indices (from APD120 provisioning capture):
+#   Index 01 (fast):        100 ms  — instant/fast ramp
+#   Index 02 (on_ramp):     750 ms  — on-ramp time (used for turn-on)
+#   Index 03 (off_ramp):   2000 ms  — off-ramp time (used for turn-off)
+#   Index 04 (slow_1):     5000 ms  — slow fade 1
+#   Index 05 (slow_2):     5000 ms  — slow fade 2
+#   Index 06 (fast_2):      100 ms  — fast ramp (secondary)
+
+
+# ==========================================================================
+# 1. Set Ramp Rate — choose a ramp type and time
+# ==========================================================================
+control4_set_ramp_rate:
+  alias: "Control4: Set Ramp Rate"
+  description: >-
+    Set a dimmer ramp/transition time on a Control4 APD120 device.
+    Choose the ramp type from the dropdown (on-ramp, off-ramp, slow fade, etc.)
+    and enter the desired time in milliseconds.
+    The on-ramp and off-ramp types directly affect how the dimmer turns on and
+    off from the HA UI, automations, and physical button presses.
+  icon: mdi:timer-outline
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 dimmer"
+      required: true
+      selector:
+        device:
+          integration: zha
+    ramp_type:
+      name: Ramp Type
+      description: >-
+        Which transition time to change.
+        On-ramp (750 ms default) controls how quickly the light turns on.
+        Off-ramp (2000 ms default) controls how quickly the light turns off.
+        Fast ramp (100 ms) is used for instant transitions.
+        Slow fades (5000 ms) are used for gradual scene changes.
+      required: true
+      default: "2"
+      selector:
+        select:
+          options:
+            - label: "On-ramp (turn-on speed, default 750 ms)"
+              value: "2"
+            - label: "Off-ramp (turn-off speed, default 2000 ms)"
+              value: "3"
+            - label: "Fast ramp (instant, default 100 ms)"
+              value: "1"
+            - label: "Slow fade 1 (default 5000 ms)"
+              value: "4"
+            - label: "Slow fade 2 (default 5000 ms)"
+              value: "5"
+            - label: "Fast ramp secondary (default 100 ms)"
+              value: "6"
+    time_ms:
+      name: Ramp Time (ms)
+      description: >-
+        Transition time in milliseconds.
+        Examples: 100 = instant, 500 = quick, 750 = default on, 2000 = default off,
+        5000 = slow fade, 10000 = very slow.
+      required: true
+      default: 750
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 50
+          unit_of_measurement: ms
+          mode: box
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 4
+        cluster_id: 64580
+        cluster_type: in
+        command: 0
+        command_type: server
+        params:
+          index: "{{ ramp_type | int(2) }}"
+          time_ms: "{{ time_ms | int(750) }}"
+
+
+# ==========================================================================
+# 2. Set On/Off Ramps — set both turn-on and turn-off speeds at once
+# ==========================================================================
+control4_set_on_off_ramps:
+  alias: "Control4: Set On/Off Ramp Times"
+  description: >-
+    Set both the on-ramp and off-ramp transition times in one call.
+    The on-ramp controls how quickly the dimmer ramps up when turned on.
+    The off-ramp controls how quickly it fades down when turned off.
+    Both values are in milliseconds.
+  icon: mdi:swap-vertical
+  mode: single
+  fields:
+    target_device:
+      name: Control4 Device
+      description: "Select a ZHA Control4 dimmer"
+      required: true
+      selector:
+        device:
+          integration: zha
+    on_time_ms:
+      name: On-Ramp Time (ms)
+      description: >-
+        How quickly the light turns on, in milliseconds.
+        Device default is 750 ms.
+      required: true
+      default: 750
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 50
+          unit_of_measurement: ms
+          mode: box
+    off_time_ms:
+      name: Off-Ramp Time (ms)
+      description: >-
+        How quickly the light turns off, in milliseconds.
+        Device default is 2000 ms.
+      required: true
+      default: 2000
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 50
+          unit_of_measurement: ms
+          mode: box
+  variables:
+    ieee: >-
+      {{ (device_attr(target_device, 'identifiers') | list)[0][1] }}
+  sequence:
+    - service: zha.issue_zigbee_cluster_command
+      data:
+        ieee: "{{ ieee }}"
+        endpoint_id: 4
+        cluster_id: 64580
+        cluster_type: in
+        command: 3
+        command_type: server
+        params:
+          on_time_ms: "{{ on_time_ms | int(750) }}"
+          off_time_ms: "{{ off_time_ms | int(2000) }}"
