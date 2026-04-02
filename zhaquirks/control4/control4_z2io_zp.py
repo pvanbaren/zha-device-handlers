@@ -58,6 +58,7 @@ from zhaquirks.const import (
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
+    SKIP_CONFIGURATION,
 )
 
 import c4_hooks  # noqa: F401
@@ -67,7 +68,6 @@ from c4_helpers import (
     C4_CLUSTER_ID,
     C4_MANUF_CLUSTER,
     C4_PROFILE_BUTTON,
-    C4_PROFILE_NETWORK,
     C4DimmerManufCluster,
     C4ConfigCluster,
     get_z2io_opt_mode,
@@ -89,14 +89,12 @@ from c4_z2io_zp import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
 _C4_Z2IO_HANDLER_MAP: dict[str, C4Z2IOZPHandler] = {}
 _SERVICES_REGISTERED = False
-# IEEE strings for which configure_device() has already been scheduled this
-# session, to avoid double-provisioning when both relay clusters bind.
-_C4_Z2IO_CONFIGURED: set[str] = set()
 
 # Relay channel (1-indexed) → synthetic ZHA endpoint ID
 _RELAY_EP = {1: 211, 2: 212}
@@ -273,32 +271,22 @@ class C4RelayCluster(CustomCluster, OnOff):
 
     async def command(self, command_id, *args,
                       manufacturer=None, expect_reply=False, tsn=None, **kwargs):
-        """Any on/off/toggle command triggers a momentary relay pulse.
-
-        The physical relay energizes for DEFAULT_PULSE_MS then releases
-        automatically.  We fire the pulse and immediately reset the HA
-        switch state to off so the toggle appears momentary in the UI.
-        """
         h = self._handler()
         if h is None:
             _LOGGER.warning("C4 relay%d: no handler for %s",
                             self._relay_channel, self.endpoint.device.ieee)
             return self._SUCCESS
 
-        # Always pulse — ignore on/off/toggle direction.
-        asyncio.ensure_future(self._pulse_and_reset(h))
+        if command_id == OnOff.ServerCommandDefs.off.id:
+            await h.open_relay(self._relay_channel)
+        elif command_id == OnOff.ServerCommandDefs.on.id:
+            await h.close_relay(self._relay_channel)
+        elif command_id == OnOff.ServerCommandDefs.toggle.id:
+            if h.relay_active(self._relay_channel):
+                await h.open_relay(self._relay_channel)
+            else:
+                await h.close_relay(self._relay_channel)
         return self._SUCCESS
-
-    async def _pulse_and_reset(self, h: C4Z2IOZPHandler) -> None:
-        """Trigger the relay pulse, then reset the switch entity to off."""
-        on_off_id = OnOff.AttributeDefs.on_off.id
-        # Show "on" briefly while the pulse is in flight.
-        self._update_attribute(on_off_id, True)
-        try:
-            await h.trigger_relay(self._relay_channel)
-        finally:
-            # Always snap back to off once the pulse completes (or fails).
-            self._update_attribute(on_off_id, False)
 
     async def read_attributes(self, attributes,
                               allow_cache=False, only_cache=False, manufacturer=None):
@@ -316,58 +304,6 @@ class C4RelayCluster(CustomCluster, OnOff):
                 failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
         return results, failures
 
-    async def bind(self):
-        """Create the per-device handler and run provisioning (once per device).
-
-        ZHA calls bind() on relay clusters during async_configure.  Since
-        C4Z2IOCluster lives on a non-ZHA-profile endpoint that ZHA skips,
-        this is the only lifecycle hook we can rely on to create the handler
-        and send configure_device() to the physical device.
-        """
-        ieee_str = str(self.endpoint.device.ieee).lower()
-        device   = self.endpoint.device
-
-        # Ensure the handler exists in the shared map.
-        if ieee_str not in _C4_Z2IO_HANDLER_MAP:
-            persisted_mode = get_z2io_opt_mode(ieee_str)
-            opt_mode = persisted_mode if persisted_mode is not None else DEFAULT_OPT_MODE
-            _C4_Z2IO_HANDLER_MAP[ieee_str] = C4Z2IOZPHandler(
-                ieee_str, device, _get_hass(device), device.application,
-                opt_mode=opt_mode,
-            )
-            _LOGGER.info(
-                "C4 Z2IO: created handler for %s from relay bind() opt_mode=%d",
-                ieee_str, opt_mode,
-            )
-
-        # Run provisioning exactly once per session per device.
-        if ieee_str not in _C4_Z2IO_CONFIGURED:
-            _C4_Z2IO_CONFIGURED.add(ieee_str)
-            handler = _C4_Z2IO_HANDLER_MAP[ieee_str]
-            _LOGGER.info("C4 Z2IO: scheduling configure_device() for %s", ieee_str)
-            async def _do_configure(h=handler, ieee=ieee_str):
-                try:
-                    await h.configure_device()
-                    await h.poll_state()
-                    _LOGGER.info("C4 Z2IO: provisioning complete for %s fw=%s",
-                                 ieee, h.fw_version)
-                except Exception as exc:
-                    _LOGGER.error("C4 Z2IO: configure_device() failed for %s — %s",
-                                  ieee, exc)
-            asyncio.ensure_future(_do_configure())
-
-        hass = _get_hass(device)
-        if hass is not None:
-            asyncio.ensure_future(_register_services_once(hass))
-
-        return [ZCLStatus.SUCCESS]
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(len(records) if records else 1)]
 
 
 class C4Relay1Cluster(C4RelayCluster):
@@ -413,16 +349,6 @@ class C4ContactCluster(CustomCluster, BinaryInput):
             else:
                 failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
         return results, failures
-
-    async def bind(self):
-        return [ZCLStatus.SUCCESS]
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(len(records) if records else 1)]
 
 
 class C4Contact1Cluster(C4ContactCluster):
@@ -484,16 +410,6 @@ class C4TempCluster(CustomCluster, TemperatureMeasurement):
                 failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
         return results, failures
 
-    async def bind(self):
-        return [ZCLStatus.SUCCESS]
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(len(records) if records else 1)]
-
 
 class C4TempInternalCluster(C4TempCluster):
     """Internal temperature sensor (c4.z2x.tmpi) on EP 221."""
@@ -548,16 +464,6 @@ class C4HumidityCluster(CustomCluster, RelativeHumidity):
                 failures[key] = foundation.Status.UNSUPPORTED_ATTRIBUTE
         return results, failures
 
-    async def bind(self):
-        return [ZCLStatus.SUCCESS]
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(len(records) if records else 1)]
-
 
 # ---------------------------------------------------------------------------
 # C4Z2IOCluster — EP 197 (C4_PROFILE_BUTTON, skipped by ZHA entity discovery)
@@ -587,7 +493,7 @@ class C4Z2IOCluster(CustomCluster):
         super().__init__(*args, **kwargs)
         self._handler: C4Z2IOZPHandler | None = None
         self._provisioned = False
-        self._polled_on_restart = False
+        self._init_task_started = False
 
     # ------------------------------------------------------------------
     # Handler lifecycle
@@ -668,35 +574,6 @@ class C4Z2IOCluster(CustomCluster):
                 cluster._update_attribute(mv_id, raw)
                 return
 
-    # ------------------------------------------------------------------
-    # ZHA cluster hooks
-    # ------------------------------------------------------------------
-
-    async def bind(self) -> list:
-        handler = self._ensure_handler()
-        _LOGGER.info("C4 Z2IO: bind() → configure_device() for %s", handler.ieee)
-        try:
-            await handler.configure_device()
-            self._provisioned = True
-            await handler.poll_state()
-            _LOGGER.info("C4 Z2IO: provisioning complete for %s  fw=%s",
-                         handler.ieee, handler.fw_version)
-        except Exception as exc:
-            _LOGGER.error("C4 Z2IO: configure_device() failed for %s — %s",
-                          handler.ieee, exc)
-
-        hass = _get_hass(self.endpoint.device)
-        if hass is not None:
-            await _register_services_once(hass)
-        return [ZCLStatus.SUCCESS]
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        return [foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(len(records) if records else 1)]
-
     async def read_attributes(self, attributes, *args, **kwargs):
         return {}, {a: foundation.Status.UNSUPPORTED_ATTRIBUTE for a in attributes}
 
@@ -704,36 +581,71 @@ class C4Z2IOCluster(CustomCluster):
     # Inbound packet dispatch
     # ------------------------------------------------------------------
 
+    async def _deferred_initialize(self) -> None:
+        """Provision device, poll state, and seed HA entity caches.
+
+        Fired as an asyncio task on the first inbound packet.  ZHA's
+        BasicClusterHandler overrides async_initialize without delegating
+        to the cluster, so the normal lifecycle hook never reaches us.
+        """
+        handler = self._ensure_handler()
+        _LOGGER.info(
+            "C4 Z2IO: deferred initialize → configure_device() for %s",
+            handler.ieee,
+        )
+        try:
+            await handler.configure_device()
+            self._provisioned = True
+            _LOGGER.info(
+                "C4 Z2IO: provisioning complete for %s  fw=%s",
+                handler.ieee, handler.fw_version,
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "C4 Z2IO: configure_device() failed for %s — %s",
+                handler.ieee, exc,
+            )
+
+        try:
+            await handler.poll_state()
+        except Exception as exc:
+            _LOGGER.warning(
+                "C4 Z2IO: poll_state() failed for %s — %s",
+                handler.ieee, exc,
+            )
+
+        # Unconditionally push current state into ZCL attribute caches so HA
+        # entities leave "unavailable".
+        for ch_idx in range(handler.num_relays):
+            self._push_relay(ch_idx + 1, handler._relay_on[ch_idx])
+        for ch_idx in range(handler.num_contacts):
+            self._push_contact(ch_idx + 1, handler._contact_state[ch_idx])
+        if handler._temp_internal_raw is not None:
+            self._push_temp(_TEMP_INTERNAL_EP, handler._temp_internal_raw)
+        if handler._temp_external_raw is not None:
+            self._push_temp(_TEMP_EXTERNAL_EP, handler._temp_external_raw)
+        if handler._humidity_raw is not None:
+            self._push_humidity(handler._humidity_raw)
+
+        hass = _get_hass(self.endpoint.device)
+        if hass is not None:
+            await _register_services_once(hass)
+
     def handle_message(self, hdr, args):
         if not isinstance(args, (bytes, bytearray)):
             return
 
         handler = self._ensure_handler()
 
+        # Trigger deferred provisioning on first packet
+        if not self._provisioned and not self._init_task_started:
+            self._init_task_started = True
+            asyncio.ensure_future(self._deferred_initialize())
+
         if not _SERVICES_REGISTERED:
             hass = _get_hass(self.endpoint.device)
             if hass is not None:
                 asyncio.ensure_future(_register_services_once(hass))
-
-        if not self._polled_on_restart and not self._provisioned:
-            self._polled_on_restart = True
-
-            async def _auto_configure(h=handler):
-                try:
-                    await h.configure_device()
-                    self._provisioned = True
-                    await h.poll_state()
-                    _LOGGER.info(
-                        "C4 Z2IO: auto-reconfigure on restart complete for %s",
-                        h.ieee,
-                    )
-                except Exception as exc:
-                    _LOGGER.error(
-                        "C4 Z2IO: auto-reconfigure failed for %s — %s",
-                        h.ieee, exc,
-                    )
-
-            asyncio.ensure_future(_auto_configure())
 
         prev_relays   = list(handler._relay_on)
         prev_contacts = list(handler._contact_state)
@@ -789,6 +701,7 @@ class Control4Z2IOZP(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             # EP 1 — ZHA identity
             1: {
@@ -803,13 +716,13 @@ class Control4Z2IOZP(CustomDevice):
             },
             # EPs 2 / 196 — C4 config / model-string
             2: {
-                PROFILE_ID:      C4_PROFILE_NETWORK,
+                PROFILE_ID:      zha.PROFILE_ID,
                 DEVICE_TYPE:     0x0000,
                 INPUT_CLUSTERS:  [C4ConfigCluster],
                 OUTPUT_CLUSTERS: [],
             },
             196: {
-                PROFILE_ID:      C4_PROFILE_NETWORK,
+                PROFILE_ID:      zha.PROFILE_ID,
                 DEVICE_TYPE:     0x0000,
                 INPUT_CLUSTERS:  [C4ConfigCluster],
                 OUTPUT_CLUSTERS: [],

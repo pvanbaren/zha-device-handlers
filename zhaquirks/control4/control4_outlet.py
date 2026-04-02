@@ -67,6 +67,7 @@ from zhaquirks.const import (
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
+    SKIP_CONFIGURATION,
 )
 
 # Ensure patches are installed before this device class is used
@@ -209,23 +210,6 @@ class C4OutletStateCluster(CustomCluster):
 
         super().handle_cluster_request(hdr, args)
 
-    async def bind(self):
-        _LOGGER.info(
-            "C4 OutletState ep198: skipping bind (C4 proprietary profile)"
-        )
-        return (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
-
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 OutletState: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
-
     async def read_attributes(
         self, attributes, allow_cache=False, only_cache=False, manufacturer=None,
     ):
@@ -264,26 +248,54 @@ class C4OutletOnOff(CustomCluster, OnOff):
     OUTLET_IDX = 0
     _SUCCESS   = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
-    async def bind(self):
+    async def read_attributes(
+        self, attributes, allow_cache=False, only_cache=False, manufacturer=None,
+    ):
+        """Poll outlet state using C4 protocol instead of ZCL Read Attributes.
+
+        Sends a C4 Get command: 0g<seq4> c4.dm.tv <outlet_idx> 00
+        The device responds with a c4.dm.tc state announcement which is
+        handled by C4DualOutletButtonCluster._handle_state_announcement.
+        Returns cached values to the caller.
+        """
+        if not only_cache:
+            await self._poll_c4_outlet_state()
+
+        result = {}
+        for attr in attributes:
+            if isinstance(attr, str):
+                try:
+                    attr_id = self.find_attribute(attr).id
+                except KeyError:
+                    continue
+            else:
+                attr_id = attr
+            cached = self._attr_cache.get(attr_id)
+            if cached is not None:
+                result[attr_id] = cached
+        return result, {}
+
+    async def _poll_c4_outlet_state(self) -> None:
+        """Send a C4 Get command to query the outlet's current state."""
+        device = self.endpoint.device
+        chan = device.get_sequence() & 0xFFFF
+        cmd = f"0g{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00"
+        data = _build_c4_frame(0, cmd)
+
+        _LOGGER.info("C4 OutletOnOff: polling outlet %d — %s", self.OUTLET_IDX, cmd)
         try:
-            result = await super().bind()
-            _LOGGER.info("C4 OutletOnOff: bind succeeded")
+            await device.request(
+                profile=C4_PROFILE_BUTTON,
+                cluster=C4_CLUSTER_ID,
+                src_ep=1, dst_ep=1,
+                sequence=device.get_sequence(),
+                data=data,
+                expect_reply=False,
+            )
         except Exception as exc:
-            _LOGGER.warning("C4 OutletOnOff: bind failed (%s), continuing", exc)
-            result = None
-
-        return result
-
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 OutletOnOff: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
+            _LOGGER.warning(
+                "C4 OutletOnOff: poll outlet %d failed: %s", self.OUTLET_IDX, exc
+            )
 
     async def _send_c4_outlet_command(self, is_on: bool) -> None:
         """Send c4.dm.tv <outlet> 00 <level> on C4_PROFILE_BUTTON, EP 1→1.
@@ -357,11 +369,6 @@ class C4Outlet1OnOff(C4OutletOnOff):
 
     OUTLET_IDX = 1
 
-    async def bind(self):
-        """Skip bind — EP 1 OutletOnOff already handles identity / routing."""
-        _LOGGER.info("C4 Outlet1OnOff: skipping bind (handled by EP 1)")
-        return self._SUCCESS
-
 
 # ---------------------------------------------------------------------------
 # Device quirk
@@ -421,6 +428,7 @@ class Control4LOZ5S1WOutlet(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             1: {
                 PROFILE_ID: zha.PROFILE_ID,

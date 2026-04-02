@@ -33,8 +33,7 @@ if _QUIRK_DIR not in sys.path:
 
 from zigpy.quirks import CustomCluster
 import zigpy.types as t
-from zigpy.zcl import foundation
-from zigpy.zcl.foundation import BaseCommandDefs, Status as ZCLStatus, ZCLCommandDef
+from zigpy.zcl.foundation import BaseCommandDefs, ZCLCommandDef
 
 import c4_helpers as C4
 from c4_helpers import (
@@ -172,6 +171,17 @@ class C4LEDCluster(CustomCluster):
             is_manufacturer_specific=True,
         )
 
+        set_all_led_modes = ZCLCommandDef(
+            id=0x03,
+            schema={
+                "num_buttons": t.uint8_t,
+                "mode": t.uint8_t,
+                "behavior": t.uint8_t,
+                "color_mode": t.uint8_t,
+            },
+            is_manufacturer_specific=True,
+        )
+
     # ------------------------------------------------------------------
     # Command method overrides
     # ------------------------------------------------------------------
@@ -203,6 +213,12 @@ class C4LEDCluster(CustomCluster):
         on_color = f"{int(on_red):02x}{int(on_green):02x}{int(on_blue):02x}"
         off_color = f"{int(off_red):02x}{int(off_green):02x}{int(off_blue):02x}"
         await self._send_led_all_same_color(int(num_buttons), on_color, off_color)
+
+    async def set_all_led_modes(self, num_buttons, mode, behavior, color_mode):
+        """Set all buttons to the same LED mode/behavior/color_mode."""
+        await self._send_all_led_modes(
+            int(num_buttons), int(mode), int(behavior), int(color_mode),
+        )
 
     def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
         """Log any unexpected inbound cluster requests."""
@@ -314,6 +330,36 @@ class C4LEDCluster(CustomCluster):
             "C4 LED: all buttons color: %d ok, %d failed", success, fail,
         )
 
+    async def _send_all_led_modes(
+        self, num_buttons: int, mode: int, behavior: int, color_mode: int
+    ):
+        """Set all buttons to the same LED mode/behavior/color_mode."""
+        device = self.endpoint.device
+        commands = []
+
+        for btn in range(num_buttons):
+            mode_addr = _led_behav_addr(btn, LED_PARAM_MODE)
+            behav_addr = _led_behav_addr(btn, LED_PARAM_BEHAVIOR)
+            cmode_addr = _led_behav_addr(btn, LED_PARAM_COLOR_MODE)
+
+            commands.extend([
+                f"0s{mode_addr:04x} c4.dmx.led {btn:02x} 00 {mode:02x}",
+                f"0s{behav_addr:04x} c4.dmx.led {btn:02x} 01 {behavior:02x}",
+                f"0s{cmode_addr:04x} c4.dmx.led {btn:02x} 02 {color_mode:02x}",
+            ])
+
+        _LOGGER.info(
+            "C4 LED: setting %d buttons to mode=%02x behavior=%02x color_mode=%02x (%d commands)",
+            num_buttons, mode, behavior, color_mode, len(commands),
+        )
+
+        success, fail, self._c4_led_seq = await self._send_c4_commands(
+            device, commands, "led_all_modes"
+        )
+        _LOGGER.info(
+            "C4 LED: all buttons mode: %d ok, %d failed", success, fail,
+        )
+
     # ------------------------------------------------------------------
     # Transport
     # ------------------------------------------------------------------
@@ -348,20 +394,3 @@ class C4LEDCluster(CustomCluster):
             await asyncio.sleep(C4_PROVISION_DELAY)
 
         return ok, fail, seq
-
-    # ------------------------------------------------------------------
-    # Suppress ZHA bind / reporting (virtual cluster, no physical ZCL)
-    # ------------------------------------------------------------------
-
-    async def bind(self):
-        return (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
-
-    async def configure_reporting(self, *args, **kwargs):
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]

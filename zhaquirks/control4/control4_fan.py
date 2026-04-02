@@ -51,6 +51,7 @@ from zhaquirks.const import (
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
+    SKIP_CONFIGURATION,
 )
 
 # Ensure patches are installed before this device class is used
@@ -81,7 +82,6 @@ _LOGGER = logging.getLogger(__name__)
 # speed commands become available.
 # ---------------------------------------------------------------------------
 _FAN_PROVISION_COMMANDS = [
-    "c4.dmx.off 0000",   # Initialise to off
     "c4.dm.tv 00 01 00", # Transition time param 01
     "c4.dm.tv 00 02 00", # Transition time param 02
     "c4.dm.tv 00 03 00", # Transition time param 03
@@ -110,11 +110,36 @@ class C4FanControlCluster(CustomCluster, Fan):
     _SUCCESS   = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
     async def async_initialize(self, from_cache=False):
-        """Seed fan_mode_sequence so ZHA knows all 5 modes are valid."""
+        """Seed fan_mode_sequence and send provisioning commands."""
         # fan_mode_sequence 3 = Off/Low/Med/High/On — all 5 modes supported
         self._update_attribute(Fan.AttributeDefs.fan_mode_sequence.id, 3)
         self._update_attribute(Fan.AttributeDefs.fan_mode.id, 0)
         await super().async_initialize(from_cache=from_cache)
+        await self._send_provision_commands()
+
+    async def _send_provision_commands(self):
+        """Send fan transition time commands on C4_PROFILE_BUTTON, EP 1→1.
+
+        Commands are idempotent so re-sending on every HA restart is harmless.
+        """
+        device = self.endpoint.device
+        for cmd in _FAN_PROVISION_COMMANDS:
+            chan = device.get_sequence() & 0xFFFF
+            full_cmd = f"0s{chan:04x} {cmd}"
+            data = _build_c4_frame(0, full_cmd)
+            try:
+                _LOGGER.info("C4 Fan provision: %s", full_cmd)
+                await device.request(
+                    profile=C4_PROFILE_BUTTON,
+                    cluster=C4_CLUSTER_ID,
+                    src_ep=1, dst_ep=1,
+                    sequence=device.get_sequence(),
+                    data=data,
+                    expect_reply=False,
+                )
+            except Exception as e:
+                _LOGGER.warning("C4 Fan provision: FAILED %s — %s", cmd, e)
+            await asyncio.sleep(C4_PROVISION_DELAY)
 
     async def read_attributes(
         self, attributes, allow_cache=False, only_cache=False, manufacturer=None,
@@ -135,51 +160,6 @@ class C4FanControlCluster(CustomCluster, Fan):
             else:
                 failure[attr_id] = foundation.Status.UNSUP_ATTRIBUTE
         return result, failure
-
-    async def bind(self):
-        """Bind and send fan provisioning commands."""
-        device = self.endpoint.device
-
-        try:
-            result = await super().bind()
-            _LOGGER.info("C4 Fan: bind succeeded")
-        except Exception as e:
-            _LOGGER.warning("C4 Fan: bind failed (%s), continuing", e)
-            result = self._SUCCESS
-
-        # Fan provisioning — sent on the button profile (0xC25C), EP 1→1,
-        # matching the pairing capture.  A per-command channel ID is embedded
-        # in the ASCII frame using the device's APS sequence counter.
-        for cmd in _FAN_PROVISION_COMMANDS:
-            chan = device.get_sequence() & 0xFFFF
-            full_cmd = f"0s{chan:04x} {cmd}"
-            data = _build_c4_frame(0, full_cmd)
-            try:
-                _LOGGER.info("C4 Fan provision: %s", full_cmd)
-                await device.request(
-                    profile=C4_PROFILE_BUTTON,
-                    cluster=C4_CLUSTER_ID,
-                    src_ep=1, dst_ep=1,
-                    sequence=device.get_sequence(),
-                    data=data,
-                    expect_reply=False,
-                )
-            except Exception as e:
-                _LOGGER.warning("C4 Fan provision: FAILED %s — %s", cmd, e)
-            await asyncio.sleep(C4_PROVISION_DELAY)
-
-        return result
-
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 Fan: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
 
     async def write_attributes(self, attributes, manufacturer=None):
         """Map fan_mode writes to c4.dmx.fsc speed commands."""
@@ -394,6 +374,7 @@ class Control4C4SF120FanController(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             1: {
                 PROFILE_ID: zha.PROFILE_ID,

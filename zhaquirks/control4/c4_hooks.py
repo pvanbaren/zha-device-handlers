@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 _QUIRK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _QUIRK_DIR not in sys.path:
@@ -152,6 +153,11 @@ try:
                 packet.profile_id in C4_PROFILES
                 and device_ieee.startswith(C4_IEEE_PREFIX)
             ):
+                # Update last_seen so ZHA considers the device available.
+                # Without this, ZHA never sees C4-profile traffic (it's
+                # intercepted here) and all entities stay "unavailable".
+                self.last_seen = time.time()
+
                 msg = packet.data
                 if hasattr(msg, 'serialize'):
                     msg = msg.serialize()

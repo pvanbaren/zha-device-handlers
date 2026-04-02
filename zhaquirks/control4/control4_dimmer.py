@@ -31,6 +31,7 @@ from zhaquirks.const import (
     OUTPUT_CLUSTERS,
     PROFILE_ID,
     SHORT_PRESS,
+    SKIP_CONFIGURATION,
 )
 
 # Ensure patches are installed before this device class is used
@@ -52,6 +53,7 @@ from c4_helpers import (
 from c4_basic_cluster import C4BasicCluster
 from c4_button_cluster import C4ButtonCluster
 from c4_led_cluster import C4LEDCluster
+from c4_ramp_cluster import C4RampCluster, C4_RAMP_CLUSTER_ID
 from c4_hooks import _C4_MODEL_QUIRK_MAP
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,26 +73,29 @@ class C4DimmerOnOff(CustomCluster, OnOff):
     cluster_id = OnOff.cluster_id
     _SUCCESS   = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
-    async def bind(self):
+    def _get_ramp_cluster(self):
+        """Find the C4RampCluster on EP 4, if available."""
         try:
-            result = await super().bind()
-            _LOGGER.info("C4 DimmerOnOff: bind succeeded")
-        except Exception as e:
-            _LOGGER.warning("C4 DimmerOnOff: bind failed (%s), continuing", e)
-            result = None
+            ep4 = self.endpoint.device.endpoints.get(4)
+            if ep4 is not None:
+                return ep4.in_clusters.get(C4_RAMP_CLUSTER_ID)
+        except Exception:
+            pass
+        return None
 
-        return result
+    def _get_on_transition(self) -> int:
+        """Return the on-ramp time in ZCL 1/10-second units."""
+        ramp = self._get_ramp_cluster()
+        if ramp is not None:
+            return ramp.get_on_ramp_tenths()
+        return C4_ON_TRANSITION
 
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 DimmerOnOff: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
+    def _get_off_transition(self) -> int:
+        """Return the off-ramp time in ZCL 1/10-second units."""
+        ramp = self._get_ramp_cluster()
+        if ramp is not None:
+            return ramp.get_off_ramp_tenths()
+        return C4_OFF_TRANSITION
 
     async def command(
         self,
@@ -105,25 +110,27 @@ class C4DimmerOnOff(CustomCluster, OnOff):
 
         if command_id == OnOff.ServerCommandDefs.on.id:
             level = self._get_on_level()
+            on_transition = self._get_on_transition()
             _LOGGER.info(
                 "C4 OnOff: on() → move_to_level_with_on_off(%d, %d)",
-                level, C4_ON_TRANSITION,
+                level, on_transition,
             )
             result = await level_cluster.command(
                 LevelControl.ServerCommandDefs.move_to_level_with_on_off.id,
-                level, C4_ON_TRANSITION,
+                level, on_transition,
                 expect_reply=False, manufacturer=manufacturer, tsn=tsn,
             )
             return result if result is not None else self._SUCCESS
 
         if command_id == OnOff.ServerCommandDefs.off.id:
+            off_transition = self._get_off_transition()
             _LOGGER.info(
                 "C4 OnOff: off() → move_to_level_with_on_off(0, %d)",
-                C4_OFF_TRANSITION,
+                off_transition,
             )
             result = await level_cluster.command(
                 LevelControl.ServerCommandDefs.move_to_level_with_on_off.id,
-                0, C4_OFF_TRANSITION,
+                0, off_transition,
                 expect_reply=False, manufacturer=manufacturer, tsn=tsn,
             )
             return result if result is not None else self._SUCCESS
@@ -174,10 +181,6 @@ class C4DimmerLevelControl(CustomCluster, LevelControl):
         LevelControl.AttributeDefs.off_transition_time.id,
         LevelControl.AttributeDefs.default_move_rate.id,
     }
-
-    async def bind(self):
-        _LOGGER.info("C4 Level: skipping bind (handled by OnOff cluster)")
-        return self._SUCCESS
 
     async def write_attributes(self, attributes, manufacturer=None):
         local_attrs  = {}
@@ -230,17 +233,6 @@ class C4DimmerLevelControl(CustomCluster, LevelControl):
             )
         success.update(local_reads)
         return success, failure
-
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 Level: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
 
     async def command(
         self,
@@ -306,6 +298,7 @@ class Control4APD120Dimmer(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             1: {
                 PROFILE_ID: zha.PROFILE_ID,
@@ -343,6 +336,12 @@ class Control4APD120Dimmer(CustomDevice):
                 PROFILE_ID:      zha.PROFILE_ID,
                 DEVICE_TYPE:     0x0000,
                 INPUT_CLUSTERS:  [C4LEDCluster],
+                OUTPUT_CLUSTERS: [],
+            },
+            4: {
+                PROFILE_ID:      zha.PROFILE_ID,
+                DEVICE_TYPE:     0x0000,
+                INPUT_CLUSTERS:  [C4RampCluster],
                 OUTPUT_CLUSTERS: [],
             },
         },

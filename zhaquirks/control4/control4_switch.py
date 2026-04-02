@@ -24,6 +24,7 @@ from zhaquirks.const import (
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
+    SKIP_CONFIGURATION,
 )
 
 # Ensure patches are installed before this device class is used
@@ -60,27 +61,6 @@ class C4SwitchOnOff(CustomCluster, OnOff):
 
     cluster_id = OnOff.cluster_id
     _SUCCESS   = (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
-
-    async def bind(self):
-        try:
-            result = await super().bind()
-            _LOGGER.info("C4 SwitchOnOff: bind succeeded")
-        except Exception as e:
-            _LOGGER.warning("C4 SwitchOnOff: bind failed (%s), continuing", e)
-            result = None
-
-        return result
-
-    async def configure_reporting(self, *args, **kwargs):
-        _LOGGER.info("C4 SwitchOnOff: skipping configure_reporting (unsupported)")
-        return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-    async def configure_reporting_multiple(self, records, *args, **kwargs):
-        count = len(records) if records else 1
-        return [[
-            foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-            for _ in range(count)
-        ]]
 
     async def command(
         self,
@@ -149,6 +129,7 @@ class Control4SW120Switch(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             1: {
                 PROFILE_ID: zha.PROFILE_ID,

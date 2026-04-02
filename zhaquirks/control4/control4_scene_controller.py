@@ -8,18 +8,9 @@ EP layout:
   197      — C4 button, C4SceneControllerButtonCluster (routing hub only)
   200–207  — virtual per-button Event entities (one per physical button)
 
-Handshake mechanism:
-  The KC120277 has no OnOff cluster on EP 1, so the standard handshake
-  path used by dimmers/switches (OnOff.bind()) is unavailable.  Instead,
-  C4SceneControllerIdentifyCluster overrides bind() on the Identify cluster.
-  IdentifyClusterHandler inherits ClusterHandler.async_configure (it does
-  NOT override it), so the call chain on every join and reconfigure is:
-
-    IdentifyClusterHandler.async_configure
-      → ClusterHandler.async_configure
-        → self.bind()
-          → ClusterHandler.bind()
-            → self.cluster.bind()   ← our override fires here
+Uses SKIP_CONFIGURATION to prevent ZHA from attempting bind/configure on
+this C4 proprietary device.  The coordinator handshake is handled reactively
+by _c4_sniff_model() when the device broadcasts its model string.
 """
 
 import logging
@@ -31,9 +22,7 @@ if _QUIRK_DIR not in sys.path:
     sys.path.insert(0, _QUIRK_DIR)
 
 from zigpy.profiles import zha
-from zigpy.quirks import CustomCluster, CustomDevice
-from zigpy.zcl import foundation
-from zigpy.zcl.foundation import Status as ZCLStatus
+from zigpy.quirks import CustomDevice
 from zigpy.zcl.clusters.general import Identify
 
 from zhaquirks.const import (
@@ -50,6 +39,7 @@ from zhaquirks.const import (
     OUTPUT_CLUSTERS,
     PROFILE_ID,
     SHORT_PRESS,
+    SKIP_CONFIGURATION,
 )
 
 # Ensure patches are installed before this device class is used
@@ -75,31 +65,6 @@ from c4_led_cluster import C4LEDCluster, C4_LED_CLUSTER_ID
 from c4_hooks import _C4_MODEL_QUIRK_MAP
 
 _LOGGER = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# KC120277-specific Identify cluster — fires handshake via bind()
-# ---------------------------------------------------------------------------
-
-class C4SceneControllerIdentifyCluster(CustomCluster, Identify):
-    """Identify cluster that sends coordinator identity + MTORR on bind().
-
-    IdentifyClusterHandler does not override async_configure, so
-    ClusterHandler.async_configure → self.bind() → cluster.bind() fires
-    on every join and every "Reconfigure device" — the same reliable path
-    used by C4DimmerOnOff / C4SwitchOnOff on the other devices.
-    """
-
-    async def bind(self):
-        try:
-            result = await super().bind()
-            _LOGGER.info("C4 KC120277: Identify bind succeeded")
-            return result
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 KC120277: Identify bind failed (%s), continuing", e
-            )
-            return (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
 
 # ---------------------------------------------------------------------------
@@ -152,13 +117,14 @@ class Control4KC120277SceneController(CustomDevice):
     }
 
     replacement = {
+        SKIP_CONFIGURATION: True,
         ENDPOINTS: {
             1: {
                 PROFILE_ID:  zha.PROFILE_ID,
                 DEVICE_TYPE: 0x0830,   # Non-Color Scene Controller — no light entity
                 INPUT_CLUSTERS: [
                     C4BasicCluster,
-                    C4SceneControllerIdentifyCluster,  # bind() → identity + MTORR
+                    Identify.cluster_id,
                     C4DimmerManufCluster,
                 ],
                 OUTPUT_CLUSTERS: [C4_MANUF_CLUSTER],

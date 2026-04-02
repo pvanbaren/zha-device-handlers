@@ -57,7 +57,8 @@ C4_PROFILE_OUTLET   = 0xC25E   # EP 198 profile on LOZ-5S1-W
 C4_PROFILES         = {C4_PROFILE_NETWORK, C4_PROFILE_BUTTON, C4_PROFILE_OUTLET}
 C4_IEEE_PREFIX      = "00:0f:ff"
 C4_MANUF_CLUSTER    = 0xFFFF
-C4_CLUSTER_ID       = 0x0001   # C4 serial-over-ZigBee cluster (same wire ID)
+C4_CLUSTER_ID       = 0x0001   # C4 serial-over-ZigBee cluster (wire ID)
+C4_CONFIG_CLUSTER_ID = 0xFC41  # ZHA-side virtual cluster for C4 config (avoids PowerConfiguration clash)
 C4_BUTTON_CLUSTER_ID = 0xFC42  # ZHA-side virtual cluster for button events
 
 # ---------------------------------------------------------------------------
@@ -596,9 +597,12 @@ class C4ConfigCluster(CustomCluster):
 
     Used by: C4-APD120 dimmer, C4-SW120 switch, C4-KC120277 scene controller.
     The outlet variant (C4OutletConfigCluster) lives in control4_outlet.py.
+
+    Uses a manufacturer-specific cluster ID (0xFC41) instead of the wire
+    ID (0x0001) to prevent ZHA from assigning PowerConfigurationClusterHandler.
     """
 
-    cluster_id   = C4_CLUSTER_ID
+    cluster_id   = C4_CONFIG_CLUSTER_ID
     name         = "Control4 Config"
     ep_attribute = "c4_config"
     _c4_custom_handler = True

@@ -17,11 +17,6 @@ _QUIRK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _QUIRK_DIR not in sys.path:
     sys.path.insert(0, _QUIRK_DIR)
 
-from zigpy.quirks import CustomCluster
-from zigpy.zcl import foundation
-from zigpy.zcl.foundation import Status as ZCLStatus
-from zigpy.zcl import foundation
-from zigpy.zcl.foundation import Status as ZCLStatus
 from zigpy.zcl.clusters.general import LevelControl, OnOff
 
 from zhaquirks import EventableCluster
@@ -43,8 +38,6 @@ from c4_helpers import (
     KC120277_BUTTON_EP_MAP,
     KC120277_BUTTON_MAP,
     OUTLET_EP_MAP,
-    _c4_report_controller_identity,
-    _send_many_to_one_route_request,
     _sync_ep1_level,
     _sync_ep1_onoff,
 )
@@ -70,19 +63,6 @@ def _make_kc120277_button_cluster(button_num: int) -> type:
         name         = f"Button {button_num + 1}"
         ep_attribute = f"c4_scene_btn_{button_num}"
         _c4_custom_handler = False  # no physical routing
-
-        async def bind(self):
-            return (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
-
-        async def configure_reporting(self, *args, **kwargs):
-            return [[foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)]]
-
-        async def configure_reporting_multiple(self, records, *args, **kwargs):
-            count = len(records) if records else 1
-            return [[
-                foundation.ConfigureReportingResponseRecord(ZCLStatus.SUCCESS)
-                for _ in range(count)
-            ]]
 
         def handle_message(self, hdr, args):
             pass  # no physical packets arrive here
@@ -396,41 +376,6 @@ class C4SceneControllerButtonCluster(C4ButtonCluster):
     name         = "Control4 Scene Controller Button Events"
     ep_attribute = "c4_scene_controller_buttons"
     BUTTON_MAP   = KC120277_BUTTON_MAP
-
-    async def bind(self):
-        """Send coordinator identity and MTORR on join/reconfigure.
-
-        The KC120277 has no OnOff cluster on EP 1, so this is the only
-        cluster whose bind() gets called that can trigger the handshake.
-        """
-        device = self.endpoint.device
-        try:
-            await _c4_report_controller_identity(
-                device,
-                "identify_pre_bind_KC120277",
-                zcl_seq=device.get_sequence(),
-            )
-            _LOGGER.info("C4 KC120277: identity sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 KC120277: identity send failed (%s), continuing", e
-            )
-
-        try:
-            await _send_many_to_one_route_request(device.application)
-            _LOGGER.info("C4 KC120277: many-to-one route request sent")
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 KC120277: route request failed (%s), continuing", e
-            )
-
-        try:
-            result = await super().bind()
-            _LOGGER.info("C4 KC120277: bind succeeded")
-            return result
-        except Exception as e:
-            _LOGGER.warning("C4 KC120277: bind failed (%s), continuing", e)
-            return (foundation.GeneralCommand.Default_Response, ZCLStatus.SUCCESS)
 
     def _handle_light_state(self, fields):
         _LOGGER.debug("C4 scene ctrl: ignoring c4.dmx.ls (no load)")
