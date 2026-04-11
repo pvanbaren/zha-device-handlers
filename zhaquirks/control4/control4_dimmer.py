@@ -22,6 +22,8 @@ from zhaquirks.const import (
     COMMAND,
     DEVICE_TYPE,
     DOUBLE_PRESS,
+    TRIPLE_PRESS,
+    QUADRUPLE_PRESS,
     ENDPOINT_ID,
     ENDPOINTS,
     INPUT_CLUSTERS,
@@ -347,17 +349,15 @@ class Control4APD120Dimmer(CustomDevice):
         },
     }
 
-    device_automation_triggers = {}
-    for _btn_id, _btn_name in DIMMER_BUTTON_MAP.items():
-        device_automation_triggers[("click",   _btn_name)] = {
-            COMMAND: "click",   CLUSTER_ID: C4_BUTTON_CLUSTER_ID, ENDPOINT_ID: 197,
+    device_automation_triggers = {
+        (_action, _btn_name): {
+            COMMAND: _action,
+            CLUSTER_ID: C4_BUTTON_CLUSTER_ID,
+            ENDPOINT_ID: 197,
         }
-        device_automation_triggers[("press",   _btn_name)] = {
-            COMMAND: "press",   CLUSTER_ID: C4_BUTTON_CLUSTER_ID, ENDPOINT_ID: 197,
-        }
-        device_automation_triggers[("release", _btn_name)] = {
-            COMMAND: "release", CLUSTER_ID: C4_BUTTON_CLUSTER_ID, ENDPOINT_ID: 197,
-        }
+        for _btn_id, _btn_name in DIMMER_BUTTON_MAP.items()
+        for _action in ("click", "press", "release", DOUBLE_PRESS, TRIPLE_PRESS, QUADRUPLE_PRESS)
+    }
 
 
 # ---------------------------------------------------------------------------
