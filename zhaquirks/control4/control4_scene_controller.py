@@ -30,6 +30,8 @@ from zhaquirks.const import (
     COMMAND,
     DEVICE_TYPE,
     DOUBLE_PRESS,
+    TRIPLE_PRESS,
+    QUADRUPLE_PRESS,
     ENDPOINT_ID,
     ENDPOINTS,
     INPUT_CLUSTERS,
@@ -174,7 +176,7 @@ class Control4KC120277SceneController(CustomDevice):
             ENDPOINT_ID: KC120277_BUTTON_EP_MAP[_btn_id],
         }
         for _btn_id, _btn_name in KC120277_BUTTON_MAP.items()
-        for _action in (SHORT_PRESS, DOUBLE_PRESS, LONG_PRESS, LONG_RELEASE)
+        for _action in (SHORT_PRESS, DOUBLE_PRESS, TRIPLE_PRESS, QUADRUPLE_PRESS, LONG_PRESS, LONG_RELEASE)
     }
 
 

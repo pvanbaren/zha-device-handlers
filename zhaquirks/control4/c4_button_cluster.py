@@ -28,6 +28,7 @@ from zhaquirks.const import (
     LONG_RELEASE,
     SHORT_PRESS,
     TRIPLE_PRESS,
+    QUADRUPLE_PRESS,
 )
 
 import c4_helpers as C4
@@ -233,8 +234,10 @@ class C4ButtonCluster(EventableCluster):
                 action = SHORT_PRESS
             elif extra == "02":
                 action = DOUBLE_PRESS
-            else:
+            elif extra == "03":
                 action = TRIPLE_PRESS
+            else:
+                action = QUADRUPLE_PRESS
 
         params = {"event_code": event_code, "button_id": button_id}
         if extra is not None:
@@ -396,7 +399,14 @@ class C4SceneControllerButtonCluster(C4ButtonCluster):
         event_code = namespace.split(".")[-1] if namespace else "unknown"
         action = DIMMER_EVENT_MAP.get(event_code, f"unknown_{event_code}")
         if action == "click_count" and extra is not None:
-            action = DOUBLE_PRESS if extra == "02" else SHORT_PRESS
+            if extra == "01":
+                action = SHORT_PRESS
+            elif extra == "02":
+                action = DOUBLE_PRESS
+            elif extra == "03":
+                action = TRIPLE_PRESS
+            else:
+                action = QUADRUPLE_PRESS
 
         _LOGGER.info(
             "C4 scene ctrl: button_id=0x%02x event=%s action=%s extra=%s",
