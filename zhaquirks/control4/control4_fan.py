@@ -102,7 +102,8 @@ class C4FanControlCluster(CustomCluster, Fan):
 
     Fan speed is set by sending `c4.dmx.fsc 00 [speed]` on the C4 button
     profile (0xC25C).  The speed byte maps directly to ZCL fan_mode:
-      0 → off, 1 → low, 2 → medium-low, 3 → medium-high, 4 → high
+      0 → off, 2 → low, 3 → medium, 4 → high
+      (we skip 1 = minimum speed since zha.fan only supports 3 speeds + off)
 
     The device reports its current speed via `sa c4.dmx.fs` announcements
     which are intercepted by C4FanButtonCluster._handle_fan_state and pushed
@@ -199,7 +200,10 @@ class C4FanControlCluster(CustomCluster, Fan):
           0s[chan4] c4.dmx.fsc 00 [speed2]
         where [chan4] is a 4-digit hex channel ID and [speed2] is a 2-digit
         hex fan mode (00–04).  Sent on profile 0xC25C, cluster 0x0001, EP 1→1.
+        We remap modes 1-3 to 2-4 since zha.fan only supports 3 speeds + off
         """
+        if (mode >= 1) and (mode <= 3):
+            mode = mode + 1
         device = self.endpoint.device
         chan    = device.get_sequence() & 0xFFFF
         cmd     = f"0s{chan:04x} c4.dmx.fsc 00 {mode:02x}"
@@ -295,7 +299,16 @@ class C4FanButtonCluster(C4ButtonCluster):
         """
         if button_id == 0x01 and click_count >= 1:
             _LOGGER.info("C4 fan: top button confirmed — reporting max speed")
-            self._update_fan_mode(4)
+            self._update_fan_mode(3)
+        elif button_id == 0x02 and click_count >= 1:
+            _LOGGER.info("C4 fan: second button confirmed — reporting medium speed")
+            self._update_fan_mode(2)
+        elif button_id == 0x03 and click_count >= 1:
+            _LOGGER.info("C4 fan: third button confirmed — reporting low speed")
+            self._update_fan_mode(1)
+        elif button_id == 0x04 and click_count >= 1:
+            _LOGGER.info("C4 fan: fourth button confirmed — redirecting to low speed")
+            self._update_fan_mode(1)
         elif button_id == 0x05 and click_count >= 1:
             _LOGGER.info("C4 fan: bottom button confirmed — reporting off")
             self._update_fan_mode(0)
