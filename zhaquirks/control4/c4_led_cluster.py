@@ -10,7 +10,14 @@ LED config protocol (from Rev E provisioning capture):
 
   Behavioral params (1-byte values):
     param 00 = mode       (00 = normal)
-    param 01 = behavior   (00 = off, 01 = on-indicator)
+    param 01 = behavior   (00 = off, 01 = on-indicator, or the level at which
+                           the LED turns on.  On the C4-4SF120 fan controller
+                           the behavior value encodes the fan speed:
+                             07 = fan speed 4 (high)
+                             06 = fan speed 3 (med-high)
+                             05 = fan speed 2 (med-low)
+                             04 = fan speed 1 (low)
+                             03 = fan speed 0 (off))
     param 02 = color mode (00 = default, 01 = on-indicator, 02 = custom color)
 
   Color params (3-byte RGB values):
@@ -68,6 +75,12 @@ LED_PARAM_OFF_COLOR = 0x04
 # Behavior values
 LED_BEHAVIOR_OFF = 0x00
 LED_BEHAVIOR_ON_INDICATOR = 0x01
+# Fan speed level behaviors (C4-4SF120): behavior = speed + 3
+LED_BEHAVIOR_FAN_SPEED_0 = 0x03
+LED_BEHAVIOR_FAN_SPEED_1 = 0x04
+LED_BEHAVIOR_FAN_SPEED_2 = 0x05
+LED_BEHAVIOR_FAN_SPEED_3 = 0x06
+LED_BEHAVIOR_FAN_SPEED_4 = 0x07
 
 # Color mode values
 LED_COLOR_MODE_DEFAULT = 0x00
