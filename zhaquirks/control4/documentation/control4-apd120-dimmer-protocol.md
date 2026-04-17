@@ -168,6 +168,19 @@ Configures LED appearance for 12 button indicators (indices 0x00–0x0B). Each b
 
 **Sub-parameters 00–02 (mode/behavior/color-mode):**
 
+Sub 01 (Behavior) encodes the load level at which the LED turns on. On the
+C4-4SF120 fan controller, the value maps to the fan speed plus an offset of 3:
+
+| Fan Speed | Behavior Value | Meaning |
+|-----------|---------------|---------|
+| 4 (high) | 07 | LED on at speed 4 |
+| 3 (med-high) | 06 | LED on at speed 3 |
+| 2 (med-low) | 05 | LED on at speed 2 |
+| 1 (low) | 04 | LED on at speed 1 |
+| 0 (off) | 03 | LED on at speed 0 |
+
+For dimmers/switches, 00 = off and 01 = on-indicator (LED tracks load state).
+
 | Button Range | Sub 00 (Mode) | Sub 01 (Behavior) | Sub 02 (Color Mode) |
 |-------------|---------------|-------------------|---------------------|
 | 00–03 | 00 (normal) | 00 (off) | 00 (default) |
