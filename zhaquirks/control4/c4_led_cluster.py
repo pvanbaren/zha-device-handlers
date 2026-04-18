@@ -6,7 +6,9 @@ Control4 devices with LED indicators (up to 12 buttons).
 
 LED config protocol (from Rev E provisioning capture):
   Namespace: c4.dmx.led
-  Command:   0s<addr> c4.dmx.led <group> <param> <value>
+  Command:   0s<seq> c4.dmx.led <group> <param> <value>
+  The 4-digit hex <seq> after '0s' is an incrementing sequence number
+  that makes each frame unique (avoids de-duplication by the device).
 
   Behavioral params (1-byte values):
     param 00 = mode       (00 = normal)
@@ -54,17 +56,6 @@ _LOGGER = logging.getLogger(__name__)
 
 C4_LED_CLUSTER_ID = 0xFC43
 
-# ---------------------------------------------------------------------------
-# EEPROM address base for LED config (from APD120 provisioning map)
-# ---------------------------------------------------------------------------
-# Behavioral params:  0x8906 + (group * 3) + param_offset
-# RGB color params:   0x892A + (group * 2) + (param - 3)
-#
-# For runtime LED changes we use the same address map.  The device processes
-# the c4.dmx.led namespace — the EEPROM address tells it where to persist.
-_LED_BEHAV_BASE = 0x8906
-_LED_COLOR_BASE = 0x892A
-
 # LED behavioral param indices
 LED_PARAM_MODE = 0x00
 LED_PARAM_BEHAVIOR = 0x01
@@ -98,16 +89,6 @@ LED_COLOR_CYAN = "00ffff"
 LED_COLOR_MAGENTA = "ff00ff"
 
 
-def _led_behav_addr(group: int, param: int) -> int:
-    """EEPROM address for a behavioral LED param (params 00-02)."""
-    return _LED_BEHAV_BASE + (group * 3) + param
-
-
-def _led_color_addr(group: int, param: int) -> int:
-    """EEPROM address for an RGB LED color param (params 03-04)."""
-    return _LED_COLOR_BASE + (group * 2) + (param - LED_PARAM_ON_COLOR)
-
-
 class C4LEDCluster(CustomCluster):
     """LED control cluster for Control4 keypads.
 
@@ -139,8 +120,8 @@ class C4LEDCluster(CustomCluster):
     ep_attribute = "c4_led_control"
     _c4_custom_handler = True
 
-    # Track the running C4 sequence number for LED commands
-    _c4_led_seq = 0x50
+    # Track the running 16-bit C4 sequence number for LED commands
+    _c4_led_seq = 0x0050
 
     class ServerCommandDefs(BaseCommandDefs):
         """Server commands exposed to ZHA UI and service calls."""
@@ -251,21 +232,15 @@ class C4LEDCluster(CustomCluster):
         """
         device = self.endpoint.device
 
-        # Build the command list: behavioral setup + RGB colors
-        on_addr = _led_color_addr(button_id, LED_PARAM_ON_COLOR)
-        off_addr = _led_color_addr(button_id, LED_PARAM_OFF_COLOR)
-        mode_addr = _led_behav_addr(button_id, LED_PARAM_MODE)
-        behav_addr = _led_behav_addr(button_id, LED_PARAM_BEHAVIOR)
-        cmode_addr = _led_behav_addr(button_id, LED_PARAM_COLOR_MODE)
-
+        # Command payloads — _send_c4_commands prepends the 0s{seq} prefix
         commands = [
             # Enable the LED with custom color mode
-            f"0s{mode_addr:04x} c4.dmx.led {button_id:02x} 00 00",
-            f"0s{behav_addr:04x} c4.dmx.led {button_id:02x} 01 01",
-            f"0s{cmode_addr:04x} c4.dmx.led {button_id:02x} 02 02",
+            f"c4.dmx.led {button_id:02x} 00 00",
+            f"c4.dmx.led {button_id:02x} 01 01",
+            f"c4.dmx.led {button_id:02x} 02 02",
             # Set the RGB colors
-            f"0s{on_addr:04x} c4.dmx.led {button_id:02x} 03 {on_color}",
-            f"0s{off_addr:04x} c4.dmx.led {button_id:02x} 04 {off_color}",
+            f"c4.dmx.led {button_id:02x} 03 {on_color}",
+            f"c4.dmx.led {button_id:02x} 04 {off_color}",
         ]
 
         _LOGGER.info(
@@ -286,14 +261,11 @@ class C4LEDCluster(CustomCluster):
     ):
         """Send LED behavioral params for a single button."""
         device = self.endpoint.device
-        mode_addr = _led_behav_addr(button_id, LED_PARAM_MODE)
-        behav_addr = _led_behav_addr(button_id, LED_PARAM_BEHAVIOR)
-        cmode_addr = _led_behav_addr(button_id, LED_PARAM_COLOR_MODE)
 
         commands = [
-            f"0s{mode_addr:04x} c4.dmx.led {button_id:02x} 00 {mode:02x}",
-            f"0s{behav_addr:04x} c4.dmx.led {button_id:02x} 01 {behavior:02x}",
-            f"0s{cmode_addr:04x} c4.dmx.led {button_id:02x} 02 {color_mode:02x}",
+            f"c4.dmx.led {button_id:02x} 00 {mode:02x}",
+            f"c4.dmx.led {button_id:02x} 01 {behavior:02x}",
+            f"c4.dmx.led {button_id:02x} 02 {color_mode:02x}",
         ]
 
         _LOGGER.info(
@@ -317,18 +289,12 @@ class C4LEDCluster(CustomCluster):
         commands = []
 
         for btn in range(num_buttons):
-            mode_addr = _led_behav_addr(btn, LED_PARAM_MODE)
-            behav_addr = _led_behav_addr(btn, LED_PARAM_BEHAVIOR)
-            cmode_addr = _led_behav_addr(btn, LED_PARAM_COLOR_MODE)
-            on_addr = _led_color_addr(btn, LED_PARAM_ON_COLOR)
-            off_addr = _led_color_addr(btn, LED_PARAM_OFF_COLOR)
-
             commands.extend([
-                f"0s{mode_addr:04x} c4.dmx.led {btn:02x} 00 00",
-                f"0s{behav_addr:04x} c4.dmx.led {btn:02x} 01 01",
-                f"0s{cmode_addr:04x} c4.dmx.led {btn:02x} 02 02",
-                f"0s{on_addr:04x} c4.dmx.led {btn:02x} 03 {on_color}",
-                f"0s{off_addr:04x} c4.dmx.led {btn:02x} 04 {off_color}",
+                f"c4.dmx.led {btn:02x} 00 00",
+                f"c4.dmx.led {btn:02x} 01 01",
+                f"c4.dmx.led {btn:02x} 02 02",
+                f"c4.dmx.led {btn:02x} 03 {on_color}",
+                f"c4.dmx.led {btn:02x} 04 {off_color}",
             ])
 
         _LOGGER.info(
@@ -351,14 +317,10 @@ class C4LEDCluster(CustomCluster):
         commands = []
 
         for btn in range(num_buttons):
-            mode_addr = _led_behav_addr(btn, LED_PARAM_MODE)
-            behav_addr = _led_behav_addr(btn, LED_PARAM_BEHAVIOR)
-            cmode_addr = _led_behav_addr(btn, LED_PARAM_COLOR_MODE)
-
             commands.extend([
-                f"0s{mode_addr:04x} c4.dmx.led {btn:02x} 00 {mode:02x}",
-                f"0s{behav_addr:04x} c4.dmx.led {btn:02x} 01 {behavior:02x}",
-                f"0s{cmode_addr:04x} c4.dmx.led {btn:02x} 02 {color_mode:02x}",
+                f"c4.dmx.led {btn:02x} 00 {mode:02x}",
+                f"c4.dmx.led {btn:02x} 01 {behavior:02x}",
+                f"c4.dmx.led {btn:02x} 02 {color_mode:02x}",
             ])
 
         _LOGGER.info(
@@ -378,15 +340,21 @@ class C4LEDCluster(CustomCluster):
     # ------------------------------------------------------------------
 
     async def _send_c4_commands(self, device, commands, label):
-        """Send C4 commands to the device, returning (ok, fail, next_seq)."""
+        """Send C4 commands to the device, returning (ok, fail, next_seq).
+
+        Each command payload is prefixed with ``0s{seq:04x}`` using an
+        incrementing sequence number to ensure every frame is unique and
+        avoid de-duplication by the device.
+        """
         seq = self._c4_led_seq
         ok = fail = 0
 
         for cmd in commands:
-            frame = _build_c4_frame(seq, cmd)
+            full_cmd = f"0s{seq:04x} {cmd}"
+            frame = _build_c4_frame(seq, full_cmd)
             try:
                 _LOGGER.debug(
-                    "C4 LED [%s]: [%02x] %s", label, seq, cmd,
+                    "C4 LED [%s]: [%04x] %s", label, seq, full_cmd,
                 )
                 await device.request(
                     profile=C4_PROFILE_BUTTON,
@@ -399,11 +367,11 @@ class C4LEDCluster(CustomCluster):
                 ok += 1
             except Exception as e:
                 _LOGGER.warning(
-                    "C4 LED [%s]: [%02x] FAILED %s — %s", label, seq, cmd, e,
+                    "C4 LED [%s]: [%04x] FAILED %s — %s", label, seq, full_cmd, e,
                 )
                 fail += 1
 
-            seq = (seq + 1) & 0xFF
+            seq = (seq + 1) & 0xFFFF
             await asyncio.sleep(C4_PROVISION_DELAY)
 
         return ok, fail, seq
