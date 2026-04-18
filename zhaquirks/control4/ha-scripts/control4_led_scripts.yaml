@@ -430,8 +430,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_0 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_0 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_0 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -448,8 +446,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_1 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_1 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_1 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -466,8 +462,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_2 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_2 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_2 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -484,8 +478,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_3 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_3 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_3 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -502,8 +494,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_4 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_4 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_4 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -520,8 +510,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_5 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_5 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_5 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -538,8 +526,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_6 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_6 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_6 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -556,8 +542,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_7 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_7 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_7 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -574,8 +558,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_8 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_8 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_8 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -592,8 +574,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_9 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_9 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_9 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -610,8 +590,6 @@ control4_set_all_leds_individual:
           off_red: "{{ (off_color_10 | default([0,0,0]))[0] | int(0) }}"
           off_green: "{{ (off_color_10 | default([0,0,0]))[1] | int(0) }}"
           off_blue: "{{ (off_color_10 | default([0,0,0]))[2] | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1046,8 +1024,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_0 | default('1')) | int(1) }}"
           color_mode: "{{ (color_mode_0 | default('1')) | int(1) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1061,8 +1037,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_1 | default('1')) | int(1) }}"
           color_mode: "{{ (color_mode_1 | default('1')) | int(1) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1076,8 +1050,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_2 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_2 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1091,8 +1063,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_3 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_3 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1106,8 +1076,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_4 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_4 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1121,8 +1089,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_5 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_5 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1136,8 +1102,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_6 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_6 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1151,8 +1115,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_7 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_7 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1166,8 +1128,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_8 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_8 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1181,8 +1141,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_9 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_9 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
@@ -1196,8 +1154,6 @@ control4_set_all_led_modes_individual:
           mode: 0
           behavior: "{{ (behavior_10 | default('0')) | int(0) }}"
           color_mode: "{{ (color_mode_10 | default('0')) | int(0) }}"
-    - delay:
-        milliseconds: 100
     - service: zha.issue_zigbee_cluster_command
       data:
         ieee: "{{ ieee }}"
