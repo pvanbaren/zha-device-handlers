@@ -234,10 +234,6 @@ class C4LEDCluster(CustomCluster):
 
         # Command payloads — _send_c4_commands prepends the 0s{seq} prefix
         commands = [
-            # Enable the LED with custom color mode
-            f"c4.dmx.led {button_id:02x} 00 00",
-            f"c4.dmx.led {button_id:02x} 01 01",
-            f"c4.dmx.led {button_id:02x} 02 02",
             # Set the RGB colors
             f"c4.dmx.led {button_id:02x} 03 {on_color}",
             f"c4.dmx.led {button_id:02x} 04 {off_color}",
@@ -290,9 +286,6 @@ class C4LEDCluster(CustomCluster):
 
         for btn in range(num_buttons):
             commands.extend([
-                f"c4.dmx.led {btn:02x} 00 00",
-                f"c4.dmx.led {btn:02x} 01 01",
-                f"c4.dmx.led {btn:02x} 02 02",
                 f"c4.dmx.led {btn:02x} 03 {on_color}",
                 f"c4.dmx.led {btn:02x} 04 {off_color}",
             ])
