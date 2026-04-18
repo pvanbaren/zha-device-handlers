@@ -1,7 +1,7 @@
 """
 Control4 C4-Z2IO-ZP IO / Garage Door Module handler.
 
-Protocol reverse-engineered from Wireshark captures:
+Protocol documented from Wireshark captures:
   - provisioning capture (original)
   - open/close operation capture (new)
 
