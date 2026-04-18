@@ -357,15 +357,9 @@ class C4FanButtonCluster(C4ButtonCluster):
             if led_cluster is None:
                 return
 
-            active_btn = _FAN_SPEED_TO_LED.get(device_speed)
-            if active_btn is None:
-                return
-
+            # Configure button LEDs to follow the fan speed
             for btn in _FAN_LED_BUTTONS:
-                if btn == active_btn:
-                    await led_cluster.set_led_color(btn, 0, 0, 255, 0, 0, 255)
-                else:
-                    await led_cluster.set_led_color(btn, 0, 0, 0, 0, 0, 0)
+                await led_cluster.set_led_mode(btn, 0, 7 - btn, 0)
 
             _LOGGER.info("C4 fan: LED update for speed %d complete", device_speed)
         except Exception:
