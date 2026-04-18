@@ -133,6 +133,7 @@ class C4FanControlCluster(CustomCluster, Fan):
         self._update_attribute(Fan.AttributeDefs.fan_mode.id, 0)
         await super().async_initialize(from_cache=from_cache)
         await self._send_provision_commands()
+        await self._configure_speed_leds()
 
     async def _send_provision_commands(self):
         """Send fan transition time commands on C4_PROFILE_BUTTON, EP 1→1.
@@ -157,6 +158,29 @@ class C4FanControlCluster(CustomCluster, Fan):
             except Exception as e:
                 _LOGGER.warning("C4 Fan provision: FAILED %s — %s", cmd, e)
             await asyncio.sleep(C4_PROVISION_DELAY)
+
+    async def _configure_speed_leds(self):
+        """Configure button LEDs to follow the fan speed.
+
+        Each button's behavior is set to the corresponding speed level
+        (btn 0 → behavior 7/high, btn 1 → 6/med-high, … btn 4 → 3/off).
+        The device lights the LED whose behavior matches the current speed,
+        so this only needs to run once at initialization.
+        """
+        try:
+            ep3 = self.endpoint.device.endpoints.get(3)
+            if ep3 is None:
+                return
+            led_cluster = ep3.in_clusters.get(C4_LED_CLUSTER_ID)
+            if led_cluster is None:
+                return
+
+            for btn in _FAN_LED_BUTTONS:
+                await led_cluster.set_led_mode(btn, 0, 7 - btn, 0)
+
+            _LOGGER.info("C4 fan: LED speed indicators configured")
+        except Exception:
+            _LOGGER.warning("C4 fan: LED configuration failed", exc_info=True)
 
     async def read_attributes(
         self, attributes, allow_cache=False, only_cache=False, manufacturer=None,
@@ -285,7 +309,6 @@ class C4FanButtonCluster(C4ButtonCluster):
                 return
             _LOGGER.info("C4 fan: c4.dmx.fs speed=%d", speed)
             self._update_fan_mode(speed)
-            asyncio.ensure_future(self._update_speed_leds(speed))
         except (IndexError, ValueError) as e:
             _LOGGER.warning(
                 "C4 fan: failed to parse c4.dmx.fs: data=%s (%s)", data, e
@@ -347,23 +370,6 @@ class C4FanButtonCluster(C4ButtonCluster):
         except Exception:
             _LOGGER.warning("C4 fan: fan_mode update failed", exc_info=True)
 
-    async def _update_speed_leds(self, device_speed: int) -> None:
-        """Set the LED for the active speed's button to blue, others off."""
-        try:
-            ep3 = self.endpoint.device.endpoints.get(3)
-            if ep3 is None:
-                return
-            led_cluster = ep3.in_clusters.get(C4_LED_CLUSTER_ID)
-            if led_cluster is None:
-                return
-
-            # Configure button LEDs to follow the fan speed
-            for btn in _FAN_LED_BUTTONS:
-                await led_cluster.set_led_mode(btn, 0, 7 - btn, 0)
-
-            _LOGGER.info("C4 fan: LED update for speed %d complete", device_speed)
-        except Exception:
-            _LOGGER.warning("C4 fan: LED update failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
