@@ -176,6 +176,18 @@ class C4LEDCluster(CustomCluster):
             is_manufacturer_specific=True,
         )
 
+        set_led_single_on = ZCLCommandDef(
+            id=0x01,
+            schema={
+                "button_id": t.uint8_t,
+                "button_idx": t.uint8_t,
+                "behavior_on": t.uint8_t,
+                "behavior_others": t.uint8_t,
+            },
+            is_manufacturer_specific=True,
+        )
+
+
     # ------------------------------------------------------------------
     # Command method overrides
     # ------------------------------------------------------------------
@@ -197,6 +209,12 @@ class C4LEDCluster(CustomCluster):
         """Set LED behavioral params for a single button."""
         await self._send_led_mode(
             int(button_id), int(mode), int(behavior), int(color_mode),
+        )
+
+    async def set_led_single_on(self, button_id, button_idx, behavior_on, behavior_others):
+        """Set LED behavioral params for a single button, others off."""
+        await self._send_led_single_on(
+            int(button_id), int(button_idx), int(behavior_on), int(behavior_others),
         )
 
     async def set_led_all_same_color(
@@ -274,6 +292,32 @@ class C4LEDCluster(CustomCluster):
         )
         _LOGGER.info(
             "C4 LED: button %d mode: %d ok, %d failed",
+            button_id, success, fail,
+        )
+
+    async def _send_led_single_on(
+        self, button_id: int, button_idx: int, behavior_on: int, behavior_others: int
+    ):
+        """Send LED behavior for a single button."""
+        device = self.endpoint.device
+
+        commands = []
+        for idx in range(6):  # C4 keypads have up to 6 buttons
+            behavior = behavior_on if idx == button_idx else behavior_others
+            commands.append(
+                f"c4.dmx.led {idx:02x} 01 {behavior:02x}",
+            )
+
+        _LOGGER.info(
+            "C4 LED: setting button %d index %d to behavior=2",
+            button_id, button_idx,
+        )
+
+        success, fail, self._c4_led_seq = await self._send_c4_commands(
+            device, commands, f"led_mode_btn{button_id}"
+        )
+        _LOGGER.info(
+            "C4 LED: button %d behavior: %d ok, %d failed",
             button_id, success, fail,
         )
 
