@@ -177,7 +177,7 @@ class C4LEDCluster(CustomCluster):
         )
 
         set_led_single_on = ZCLCommandDef(
-            id=0x01,
+            id=0x04,
             schema={
                 "button_id": t.uint8_t,
                 "button_idx": t.uint8_t,
