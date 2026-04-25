@@ -82,6 +82,8 @@ import asyncio
 import logging
 from typing import Any
 
+from c4_helpers import next_c4_seq
+
 _LOGGER = logging.getLogger(__name__)
 
 # ── APS constants ──────────────────────────────────────────────────────────────
@@ -241,8 +243,6 @@ class C4Z2IOZPHandler:
             ieee, opt_mode, self.num_relays, self.num_contacts,
         )
 
-        self._seq: int = 0x0040
-
         # Pending response futures keyed by seq
         self._pending: dict[int, asyncio.Future] = {}
 
@@ -270,22 +270,18 @@ class C4Z2IOZPHandler:
         self._temp_external_raw: int | None = None   # c4.z2x.tmpe
         self._humidity_raw:      int | None = None   # c4.z2x.thumi
 
-    # ── Sequence counter ──────────────────────────────────────────────────────
-
-    def _next_seq(self) -> int:
-        seq = self._seq
-        self._seq = (self._seq + 1) & 0xFFFF
-        return seq
-
     # ── Frame builders ────────────────────────────────────────────────────────
+    # Sequence numbers come from the unified per-device counter
+    # (c4_helpers.next_c4_seq) so they don't collide with seqs emitted by
+    # other clusters on the same device.
 
     def _get_frame(self, prop: str, *args: str) -> tuple[int, bytes]:
-        seq = self._next_seq()
+        seq = next_c4_seq(self._dev)
         parts = [f"0g{seq:04x}", prop, *args]
         return seq, (" ".join(parts) + "\r\n").encode("ascii")
 
     def _set_frame(self, prop: str, *args: str) -> tuple[int, bytes]:
-        seq = self._next_seq()
+        seq = next_c4_seq(self._dev)
         parts = [f"0s{seq:04x}", prop, *args]
         return seq, (" ".join(parts) + "\r\n").encode("ascii")
 

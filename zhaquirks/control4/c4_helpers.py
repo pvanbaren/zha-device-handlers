@@ -228,6 +228,24 @@ def set_z2io_opt_mode(ieee: str, mode: int) -> None:
 # Frame / command helpers
 # ---------------------------------------------------------------------------
 
+def next_c4_seq(device) -> int:
+    """Return the next 16-bit C4-transport sequence number for `device`.
+
+    The C4 ASCII protocol embeds a 4-hex-digit sequence number after the
+    `0s`/`0g`/`0r`/`0t` frame-type prefix and uses it as a de-duplication
+    key.  All cluster modules sharing the same physical device must draw
+    sequences from the same counter — colliding sequences are silently
+    dropped by the device.
+
+    Counter is lazily attached as `device._c4_seq` so it lives for the
+    device's lifetime and is shared across every cluster on it.  The seed
+    of 0x0040 matches what the original Control4 controller used.
+    """
+    seq = getattr(device, '_c4_seq', 0x0040)
+    device._c4_seq = (seq + 1) & 0xFFFF
+    return seq
+
+
 def _build_c4_frame(seq_num, ascii_cmd: str) -> bytes:
     """Build a C4 serial-over-ZigBee APS payload (ASCII command + CRLF).
 

@@ -17,15 +17,15 @@ Protocol (confirmed from Wireshark captures):
   Custom cluster 0xC25C with text-based ASCII commands over ZigBee APS.
 
   SET command (coordinator → device, C4_PROFILE_BUTTON EP 1→1):
-    0s<chan4> c4.dm.tv <outlet> 00 <level>\r\n
+    0s<seq4> c4.dm.tv <outlet> 00 <level>\r\n
     outlet: 00 = outlet index 0, 01 = outlet index 1
     level:  64 (hex 100) = ON, 00 = OFF
 
   RESPONSE (device → coordinator, EP 197):
-    0r<chan4> 000
+    0r<seq4> 000
 
   STATE ANNOUNCE (device → coordinator, EP 197):
-    0t<chan4> sa c4.dm.tc <outlet> <level>\r\n
+    0t<seq4> sa c4.dm.tc <outlet> <level>\r\n
     outlet: echoes the outlet index from the SET command
     level:  64 = ON, 00 = OFF
 
@@ -89,6 +89,7 @@ from c4_helpers import (
     _INVALID_MODELS,
     _build_c4_frame,
     _sync_ep1_onoff,
+    next_c4_seq,
     C4ConfigCluster,
     C4DimmerManufCluster,
 )
@@ -237,7 +238,7 @@ class C4OutletOnOff(CustomCluster, OnOff):
     """OnOff cluster for the LOZ-5S1-W outlet.
 
     Sends on/off commands using the C4 serial protocol:
-      0s<chan4> c4.dm.tv <outlet_idx> 00 <level>\r\n
+      0s<seq4> c4.dm.tv <outlet_idx> 00 <level>\r\n
     on C4_PROFILE_BUTTON (0xC25C), EP 1→1.
 
     OUTLET_IDX is the C4 protocol outlet selector (00 or 01).
@@ -278,8 +279,8 @@ class C4OutletOnOff(CustomCluster, OnOff):
     async def _poll_c4_outlet_state(self) -> None:
         """Send a C4 Get command to query the outlet's current state."""
         device = self.endpoint.device
-        chan = device.get_sequence() & 0xFFFF
-        cmd = f"0g{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00"
+        seq = next_c4_seq(device)
+        cmd = f"0g{seq:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00"
         data = _build_c4_frame(0, cmd)
 
         _LOGGER.debug("C4 OutletOnOff: polling outlet %d — %s", self.OUTLET_IDX, cmd)
@@ -301,14 +302,14 @@ class C4OutletOnOff(CustomCluster, OnOff):
         """Send c4.dm.tv <outlet> 00 <level> on C4_PROFILE_BUTTON, EP 1→1.
 
         Command format (confirmed from capture):
-          0s<chan4> c4.dm.tv <outlet2> 00 <level2>\r\n
+          0s<seq4> c4.dm.tv <outlet2> 00 <level2>\r\n
         where outlet is the 2-digit hex outlet index and level is 64 (ON)
         or 00 (OFF).
         """
         device = self.endpoint.device
-        chan = device.get_sequence() & 0xFFFF
+        seq = next_c4_seq(device)
         level = 0x64 if is_on else 0x00
-        cmd = f"0s{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00 {level:02x}"
+        cmd = f"0s{seq:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00 {level:02x}"
         data = _build_c4_frame(0, cmd)
 
         _LOGGER.debug("C4 OutletOnOff: sending %s", cmd)
@@ -364,7 +365,7 @@ class C4Outlet1OnOff(C4OutletOnOff):
 
     Same C4 serial protocol as C4OutletOnOff but with OUTLET_IDX=1,
     so commands target the second physical outlet:
-      0s<chan4> c4.dm.tv 01 00 <level>\r\n
+      0s<seq4> c4.dm.tv 01 00 <level>\r\n
     """
 
     OUTLET_IDX = 1

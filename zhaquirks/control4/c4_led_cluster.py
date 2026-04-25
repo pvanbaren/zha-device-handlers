@@ -50,6 +50,7 @@ from c4_helpers import (
     C4_CLUSTER_ID,
     C4_PROVISION_DELAY,
     _build_c4_frame,
+    next_c4_seq,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,9 +120,6 @@ class C4LEDCluster(CustomCluster):
     name = "Control4 LED Control"
     ep_attribute = "c4_led_control"
     _c4_custom_handler = True
-
-    # Track the running 16-bit C4 sequence number for LED commands
-    _c4_led_seq = 0x0050
 
     class ServerCommandDefs(BaseCommandDefs):
         """Server commands exposed to ZHA UI and service calls."""
@@ -263,7 +261,7 @@ class C4LEDCluster(CustomCluster):
             button_id, on_color, off_color,
         )
 
-        success, fail, self._c4_led_seq = await self._send_c4_commands(
+        success, fail = await self._send_c4_commands(
             device, commands, f"led_color_btn{button_id}"
         )
         _LOGGER.info(
@@ -288,7 +286,7 @@ class C4LEDCluster(CustomCluster):
             button_id, mode, behavior, color_mode,
         )
 
-        success, fail, self._c4_led_seq = await self._send_c4_commands(
+        success, fail = await self._send_c4_commands(
             device, commands, f"led_mode_btn{button_id}"
         )
         _LOGGER.info(
@@ -321,7 +319,7 @@ class C4LEDCluster(CustomCluster):
             button_id, button_idx,
         )
 
-        success, fail, self._c4_led_seq = await self._send_c4_commands(
+        success, fail = await self._send_c4_commands(
             device, commands, f"led_mode_btn{button_id}"
         )
         _LOGGER.info(
@@ -352,7 +350,7 @@ class C4LEDCluster(CustomCluster):
             num_buttons, on_color, off_color, len(commands),
         )
 
-        success, fail, self._c4_led_seq = await self._send_c4_commands(
+        success, fail = await self._send_c4_commands(
             device, commands, "led_all_color"
         )
         _LOGGER.info(
@@ -378,7 +376,7 @@ class C4LEDCluster(CustomCluster):
             num_buttons, mode, behavior, color_mode, len(commands),
         )
 
-        success, fail, self._c4_led_seq = await self._send_c4_commands(
+        success, fail = await self._send_c4_commands(
             device, commands, "led_all_modes"
         )
         _LOGGER.info(
@@ -390,16 +388,17 @@ class C4LEDCluster(CustomCluster):
     # ------------------------------------------------------------------
 
     async def _send_c4_commands(self, device, commands, label):
-        """Send C4 commands to the device, returning (ok, fail, next_seq).
+        """Send C4 commands to the device, returning (ok, fail).
 
-        Each command payload is prefixed with ``0s{seq:04x}`` using an
-        incrementing sequence number to ensure every frame is unique and
-        avoid de-duplication by the device.
+        Each command payload is prefixed with ``0s{seq:04x}`` using a
+        sequence number drawn from the unified per-device counter so frames
+        from this cluster don't collide with seqs emitted by other clusters
+        on the same device.
         """
-        seq = self._c4_led_seq
         ok = fail = 0
 
         for cmd in commands:
+            seq = next_c4_seq(device)
             full_cmd = f"0s{seq:04x} {cmd}"
             frame = _build_c4_frame(seq, full_cmd)
             try:
@@ -421,7 +420,6 @@ class C4LEDCluster(CustomCluster):
                 )
                 fail += 1
 
-            seq = (seq + 1) & 0xFFFF
             await asyncio.sleep(C4_PROVISION_DELAY)
 
-        return ok, fail, seq
+        return ok, fail

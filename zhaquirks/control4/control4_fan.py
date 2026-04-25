@@ -16,7 +16,7 @@ CAPTURE 2 — operational speed changes:
     speed 03 = medium-high
     speed 04 = high
   Device state announcement on EP 197 (C4_PROFILE_BUTTON):
-    0t[chan] sa c4.dmx.fs 00 00 [speed] [rpmA] [rpmB] [rpmC] [rpmD] …
+    0t[seq] sa c4.dmx.fs 00 00 [speed] [rpmA] [rpmB] [rpmC] [rpmD] …
     Field index 2 (0-indexed from the data list after the namespace) is the
     current fan speed, hex-encoded (00–04).
 
@@ -69,6 +69,7 @@ from c4_helpers import (
     C4_PROVISION_DELAY,
     DIMMER_BUTTON_MAP,
     _build_c4_frame,
+    next_c4_seq,
     C4ConfigCluster,
     C4DimmerManufCluster,
 )
@@ -142,8 +143,8 @@ class C4FanControlCluster(CustomCluster, Fan):
         """
         device = self.endpoint.device
         for cmd in _FAN_PROVISION_COMMANDS:
-            chan = device.get_sequence() & 0xFFFF
-            full_cmd = f"0s{chan:04x} {cmd}"
+            seq = next_c4_seq(device)
+            full_cmd = f"0s{seq:04x} {cmd}"
             data = _build_c4_frame(0, full_cmd)
             try:
                 _LOGGER.debug("C4 Fan provision: %s", full_cmd)
@@ -234,16 +235,17 @@ class C4FanControlCluster(CustomCluster, Fan):
         """Send c4.dmx.fsc 00 [mode] on C4_PROFILE_BUTTON, EP 1→1.
 
         Command format (confirmed from capture):
-          0s[chan4] c4.dmx.fsc 00 [speed2]
-        where [chan4] is a 4-digit hex channel ID and [speed2] is a 2-digit
-        hex fan mode (00–04).  Sent on profile 0xC25C, cluster 0x0001, EP 1→1.
+          0s[seq4] c4.dmx.fsc 00 [speed2]
+        where [seq4] is a 4-digit hex C4-transport sequence number and
+        [speed2] is a 2-digit hex fan mode (00–04).  Sent on profile 0xC25C,
+        cluster 0x0001, EP 1→1.
         We remap modes 1-3 to 2-4 since zha.fan only supports 3 speeds + off
         """
         if (mode >= 1) and (mode <= 3):
             mode = mode + 1
         device = self.endpoint.device
-        chan    = device.get_sequence() & 0xFFFF
-        cmd     = f"0s{chan:04x} c4.dmx.fsc 00 {mode:02x}"
+        seq     = next_c4_seq(device)
+        cmd     = f"0s{seq:04x} c4.dmx.fsc 00 {mode:02x}"
         data    = _build_c4_frame(0, cmd)
 
         _LOGGER.debug("C4 Fan: sending %s", cmd)

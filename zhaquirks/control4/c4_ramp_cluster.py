@@ -46,6 +46,7 @@ from c4_helpers import (
     C4_CLUSTER_ID,
     C4_PROVISION_DELAY,
     _build_c4_frame,
+    next_c4_seq,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,9 +132,6 @@ class C4RampCluster(CustomCluster):
     name = "Control4 Ramp Control"
     ep_attribute = "c4_ramp_control"
     _c4_custom_handler = True
-
-    # C4 command sequence tracker
-    _c4_ramp_seq = 0x70
 
     # Local cache: index → time in ms
     _ramp_times: dict[int, int] = {}
@@ -245,14 +243,15 @@ class C4RampCluster(CustomCluster):
         time_ms = max(0, min(65535, time_ms))
 
         # Channel is always 00 for single-output dimmer
-        cmd = f"0s{self._c4_ramp_seq:04x} c4.dm.tv 00 {index:02x} {time_ms:04x}"
+        seq = next_c4_seq(device)
+        cmd = f"0s{seq:04x} c4.dm.tv 00 {index:02x} {time_ms:04x}"
 
         _LOGGER.info(
             "C4 Ramp: setting %s (idx 0x%02x) to %d ms — cmd: %s",
             name, index, time_ms, cmd,
         )
 
-        frame = _build_c4_frame(self._c4_ramp_seq, cmd)
+        frame = _build_c4_frame(seq, cmd)
         try:
             await device.request(
                 profile=C4_PROFILE_BUTTON,
@@ -277,8 +276,6 @@ class C4RampCluster(CustomCluster):
             _LOGGER.warning(
                 "C4 Ramp: failed to set %s to %d ms — %s", name, time_ms, e,
             )
-
-        self._c4_ramp_seq = (self._c4_ramp_seq + 1) & 0xFFFF
 
     def _sync_zcl_transition_attrs(self):
         """Push cached ramp times into the EP 1 LevelControl attribute cache.
