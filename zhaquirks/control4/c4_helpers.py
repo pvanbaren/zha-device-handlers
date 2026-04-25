@@ -171,7 +171,12 @@ def get_model_from_ieee(key: str) -> str | None:
 
 def set_model_for_ieee(key: str, value: str) -> None:
     _C4_IEEE_MODEL_MAP[key] = value
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from a sync context with no running loop — save synchronously.
+        _save_store(dict(_C4_IEEE_MODEL_MAP))
+        return
     loop.run_in_executor(None, _save_store, dict(_C4_IEEE_MODEL_MAP))
 
 
@@ -211,7 +216,11 @@ def set_z2io_opt_mode(ieee: str, mode: int) -> None:
     """Persist the opt_mode for a Z2IO device."""
     entry = _C4_Z2IO_SETTINGS.setdefault(ieee, {})
     entry["opt_mode"] = mode
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _save_z2io_settings(dict(_C4_Z2IO_SETTINGS))
+        return
     loop.run_in_executor(None, _save_z2io_settings, dict(_C4_Z2IO_SETTINGS))
 
 

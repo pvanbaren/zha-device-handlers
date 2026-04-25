@@ -246,15 +246,16 @@ class C4LEDCluster(CustomCluster):
     async def _send_led_color(self, button_id: int, on_color: str, off_color: str):
         """Send LED on-color and off-color for a single button.
 
-        Also enables the LED with behavior=on-indicator, color_mode=custom.
+        Only writes the color params. Does NOT change LED behavior or
+        color_mode — call set_led_mode separately if the LED is not already
+        configured to display custom colors.
         """
         device = self.endpoint.device
 
         # Command payloads — _send_c4_commands prepends the 0s{seq} prefix
         commands = [
-            # Set the RGB colors
-            f"c4.dmx.led {button_id:02x} 03 {on_color}",
-            f"c4.dmx.led {button_id:02x} 04 {off_color}",
+            f"c4.dmx.led {button_id:02x} {LED_PARAM_ON_COLOR:02x} {on_color}",
+            f"c4.dmx.led {button_id:02x} {LED_PARAM_OFF_COLOR:02x} {off_color}",
         ]
 
         _LOGGER.info(
@@ -295,17 +296,24 @@ class C4LEDCluster(CustomCluster):
             button_id, success, fail,
         )
 
+    # Number of addressable LEDs across C4 keypads. KC120277 has 8 buttons
+    # plus 6 backlight indicators (LED indices 0–11). Smaller keypads ignore
+    # writes to non-existent indices.
+    _MAX_LED_INDEX = 12
+
     async def _send_led_single_on(
         self, button_id: int, button_idx: int, behavior_on: int, behavior_others: int
     ):
-        """Send LED behavior for a single button."""
+        """Send LED behavior for a single button — set behavior_on on
+        button_idx and behavior_others on every other addressable LED.
+        """
         device = self.endpoint.device
 
         commands = []
-        for idx in range(6):  # C4 keypads have up to 6 buttons
+        for idx in range(self._MAX_LED_INDEX):
             behavior = behavior_on if idx == button_idx else behavior_others
             commands.append(
-                f"c4.dmx.led {idx:02x} 01 {behavior:02x}",
+                f"c4.dmx.led {idx:02x} {LED_PARAM_BEHAVIOR:02x} {behavior:02x}",
             )
 
         _LOGGER.info(
@@ -324,14 +332,19 @@ class C4LEDCluster(CustomCluster):
     async def _send_led_all_same_color(
         self, num_buttons: int, on_color: str, off_color: str
     ):
-        """Set all buttons to the same LED color."""
+        """Set all buttons to the same LED color.
+
+        Only writes the color params. Does NOT change LED behavior or
+        color_mode — call set_all_led_modes separately if the LEDs are not
+        already configured to display custom colors.
+        """
         device = self.endpoint.device
         commands = []
 
         for btn in range(num_buttons):
             commands.extend([
-                f"c4.dmx.led {btn:02x} 03 {on_color}",
-                f"c4.dmx.led {btn:02x} 04 {off_color}",
+                f"c4.dmx.led {btn:02x} {LED_PARAM_ON_COLOR:02x} {on_color}",
+                f"c4.dmx.led {btn:02x} {LED_PARAM_OFF_COLOR:02x} {off_color}",
             ])
 
         _LOGGER.info(

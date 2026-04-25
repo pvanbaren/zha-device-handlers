@@ -380,8 +380,8 @@ class Control4LOZ5S1WOutlet(CustomDevice):
     signature = {
         "manufacturer_code": 0x1040,
         MODELS_INFO: [
-            ("loz-5s1-w", "Control4"),
-            ("loz-5s1-w", None),
+            ("Control4", "loz-5s1-w"),
+            (None, "loz-5s1-w"),
             (None, None),
         ],
         ENDPOINTS: {

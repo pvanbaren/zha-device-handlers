@@ -21,7 +21,6 @@ _C4_MODEL_QUIRK_MAP is populated by each device module at import time via
   _C4_MODEL_QUIRK_MAP["model_string"] = QuirkClass
 """
 
-import asyncio
 import logging
 import os
 import sys
@@ -48,42 +47,6 @@ from c4_helpers import (
 _LOGGER = logging.getLogger(__name__)
 
 _LOGGER.warning("=== C4 QUIRK FILE LOADED (multi-device) ===")
-
-# ---------------------------------------------------------------------------
-# Models that require a deferred coordinator identity + MTORR handshake on
-# join/restart because no ZHA cluster-handler lifecycle method reaches the
-# cluster object (BasicClusterHandler overrides async_configure/
-# async_initialize entirely without delegating to the cluster).
-_C4_HANDSHAKE_MODELS = {"C4-KC120277"}
-
-
-async def _deferred_c4_handshake(device, model: str) -> None:
-    """Send coordinator identity + MTORR after a short delay.
-
-    The delay allows ZHA's configure + initialize stages to complete before
-    we put traffic on the air, which avoids races with the ZDP bind exchange.
-    """
-    await asyncio.sleep(3)
-    _LOGGER.info(
-        "C4 deferred handshake: starting for %s model=%r", device.ieee, model
-    )
-    try:
-        await _c4_report_controller_identity(
-            device, f"deferred_handshake_{model}", zcl_seq=device.get_sequence(),
-        )
-        _LOGGER.info("C4 deferred handshake: identity sent for %s", device.ieee)
-    except Exception as e:
-        _LOGGER.warning(
-            "C4 deferred handshake: identity failed for %s — %s", device.ieee, e
-        )
-    try:
-        await _send_many_to_one_route_request(device.application)
-        _LOGGER.info("C4 deferred handshake: MTORR sent for %s", device.ieee)
-    except Exception as e:
-        _LOGGER.warning(
-            "C4 deferred handshake: MTORR failed for %s — %s", device.ieee, e
-        )
-
 
 # Populated at the bottom of each device module, e.g.:
 #   from c4_hooks import _C4_MODEL_QUIRK_MAP

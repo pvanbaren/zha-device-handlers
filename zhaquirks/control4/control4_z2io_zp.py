@@ -120,8 +120,13 @@ class IoMode(t.enum8):
     Relay_1_DPST        = 0x05  # 1 relay (DPST), 0 contacts
 
 
-# Manufacturer-specific cluster ID for the IO mode setting
-_IO_MODE_CLUSTER_ID = 0xFC44   # "C4" in hex nibbles
+# Manufacturer-specific cluster ID for the IO mode setting.
+# 0xFC41 — C4ConfigCluster
+# 0xFC42 — C4 button events
+# 0xFC43 — C4LEDCluster
+# 0xFC44 — C4RampCluster
+# 0xFC45 — C4IoModeCluster (this one)
+_IO_MODE_CLUSTER_ID = 0xFC45
 
 
 class C4IoModeCluster(CustomCluster):
