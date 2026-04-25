@@ -158,7 +158,7 @@ class C4ButtonCluster(EventableCluster):
                 self._handle_state_announcement(cmd[2], cmd[3:])
                 return
             elif msg_type == "report":
-                _LOGGER.info("C4 report: %s", text)
+                _LOGGER.debug("C4 report: %s", text)
                 return
 
             self.listener_event(
@@ -180,41 +180,44 @@ class C4ButtonCluster(EventableCluster):
     # ------------------------------------------------------------------
 
     def _handle_state_announcement(self, namespace, data):
-        _LOGGER.info("C4 state: %s data='%s'", namespace, data)
+        _LOGGER.debug("C4 state: %s data='%s'", namespace, data)
 
         if namespace == "c4.dmx.dim":
             self._handle_dim_level(data)
         elif namespace == "c4.dmx.ls":
             self._handle_light_state(data)
         elif namespace == "c4.dmx.warn":
+            # Device-side warning is unusual — surface at INFO so it's visible.
             _LOGGER.info("C4 state: warning = %s", data)
         elif namespace == "c4.dmx.amb":
-            _LOGGER.info("C4 state: ambient = %s", data)
+            _LOGGER.debug("C4 state: ambient = %s", data)
         elif namespace == "c4.dmx.bp":
             if data:
                 self._handle_button_event(namespace, data[0])
         elif namespace == "c4.dmx.cc":
             if len(data) >= 2:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 state: click count, button = %s, clicks = %s",
                     data[0], data[1],
                 )
                 self._handle_button_event(namespace, data[0], data[1])
         elif namespace == "c4.dmx.hc":
-            _LOGGER.info("C4 state: hold, button = %s", data[0])
+            _LOGGER.debug("C4 state: hold, button = %s", data[0])
             self._handle_button_event(namespace, data[0])
         elif namespace == "c4.dmx.he":
-            _LOGGER.info("C4 state: release after hold, button = %s", data[0])
+            _LOGGER.debug("C4 state: release after hold, button = %s", data[0])
             self._handle_button_event(namespace, data[0])
         elif namespace == "c4.dmx.sc":
             if data:
-                _LOGGER.info("C4 state: scene change, button = %s", data[0])
+                _LOGGER.debug("C4 state: scene change, button = %s", data[0])
                 self._handle_button_event(namespace, data[0])
         elif namespace == "c4.dmx.tc":
             if data:
-                _LOGGER.info("C4 state: transition complete, button = %s", data[0])
+                _LOGGER.debug("C4 state: transition complete, button = %s", data[0])
                 self._handle_button_event(namespace, data[0])
         else:
+            # Unknown namespace from a known device — keep at INFO so the user
+            # sees the protocol field that is going unhandled.
             _LOGGER.info(
                 "C4 state: unknown namespace '%s', data = %s", namespace, data
             )
@@ -245,7 +248,7 @@ class C4ButtonCluster(EventableCluster):
             if event_code == "cc":
                 params["click_count"] = params["extra_value"]
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 button event: button=%s event=%s", button_name, event_code
         )
         self._sync_state_from_event(event_code, button_id, params)
@@ -269,7 +272,7 @@ class C4ButtonCluster(EventableCluster):
             if len(fields) >= 3:
                 level_pct = int(fields[2], 16)
                 zcl_level = round(level_pct * 254 / 100) if level_pct > 0 else 0
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 state: ls level=%d%% → zcl=%d", level_pct, zcl_level
                 )
                 _sync_ep1_level(self.endpoint.device, zcl_level, "0t_dmx_ls")
@@ -281,7 +284,7 @@ class C4ButtonCluster(EventableCluster):
         try:
             level_pct = int(data[0], 16)
             zcl_level = round(level_pct * 254 / 100) if level_pct > 0 else 0
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 state: dim level=%d%% → zcl=%d", level_pct, zcl_level
             )
             _sync_ep1_level(self.endpoint.device, zcl_level, "c4.dmx.dim")
@@ -356,17 +359,17 @@ class C4SwitchButtonCluster(C4ButtonCluster):
             onoff_cluster = ep1.in_clusters.get(OnOff.cluster_id)
             if onoff_cluster is not None:
                 if button_id == 0x01 and click_count >= 1:
-                    _LOGGER.info("C4 switch sync: ON (btn=0x01)")
+                    _LOGGER.debug("C4 switch sync: ON (btn=0x01)")
                     onoff_cluster.update_attribute(
                         OnOff.AttributeDefs.on_off.id, True
                     )
                 elif button_id == 0x05 and click_count >= 1:
-                    _LOGGER.info("C4 switch sync: OFF (btn=0x05)")
+                    _LOGGER.debug("C4 switch sync: OFF (btn=0x05)")
                     onoff_cluster.update_attribute(
                         OnOff.AttributeDefs.on_off.id, False
                     )
         except Exception:
-            _LOGGER.info("C4 switch sync: failed", exc_info=True)
+            _LOGGER.warning("C4 switch sync: failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +411,7 @@ class C4SceneControllerButtonCluster(C4ButtonCluster):
             else:
                 action = QUADRUPLE_PRESS
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 scene ctrl: button_id=0x%02x event=%s action=%s extra=%s",
             button_id, event_code, action, extra,
         )
@@ -438,7 +441,7 @@ class C4SceneControllerButtonCluster(C4ButtonCluster):
             return
 
         btn_cluster.listener_event("zha_send_event", action, {ENDPOINT_ID: ep_id})
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 scene ctrl: fired %r on EP %d cluster %s",
             action, ep_id, type(btn_cluster).__name__,
         )
@@ -474,7 +477,7 @@ class C4DualOutletButtonCluster(C4SwitchButtonCluster):
                 return
             onoff = ep.in_clusters.get(OnOff.cluster_id)
             if onoff is not None:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 dual outlet: ep%d (outlet %d) on_off=%s",
                     ep_id, outlet_idx, is_on,
                 )
@@ -495,7 +498,7 @@ class C4DualOutletButtonCluster(C4SwitchButtonCluster):
                     outlet_idx = int(data[0], 16)
                     level = int(data[1], 16)
                     is_on = level > 0
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "C4 dual outlet: c4.dm.tc outlet=%d level=%d on=%s",
                         outlet_idx, level, is_on,
                     )

@@ -114,7 +114,7 @@ class C4OutletConfigCluster(C4ConfigCluster):
     def _update_attribute(self, attrid, value):
         if attrid == C4_ATTR_DIM_LEVEL:
             is_on = isinstance(value, int) and value > 0
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 outlet config (ep %s): on/off state = %s (raw=%r)",
                 self.endpoint.endpoint_id, "on" if is_on else "off", value,
             )
@@ -145,7 +145,7 @@ class C4OutletStateCluster(CustomCluster):
         super()._update_attribute(attrid, value)
 
         if attrid == C4_ATTR_MODEL and isinstance(value, str):
-            _LOGGER.warning("C4 outlet state: model = %r", value)
+            _LOGGER.debug("C4 outlet state: model = %r", value)
             device = self.endpoint.device
             if not device.model or device.model in ("", "unknown"):
                 device.model = value
@@ -155,7 +155,7 @@ class C4OutletStateCluster(CustomCluster):
 
         elif attrid == 0x0000:
             is_on = isinstance(value, int) and value > 0
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 outlet state ep198: on/off = %s (raw=%r)",
                 "on" if is_on else "off", value,
             )
@@ -163,10 +163,10 @@ class C4OutletStateCluster(CustomCluster):
                 self.endpoint.device, is_on, "outlet_ep198_report"
             )
         else:
-            _LOGGER.info("C4 outlet state: attr 0x%04x = %r", attrid, value)
+            _LOGGER.debug("C4 outlet state: attr 0x%04x = %r", attrid, value)
 
     def handle_message(self, hdr, args):
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 outlet state ep198: cmd=0x%02x args_hex=%s",
             hdr.command_id if hdr else -1,
             args.hex() if isinstance(args, (bytes, bytearray)) else repr(args),
@@ -203,7 +203,7 @@ class C4OutletStateCluster(CustomCluster):
             return
 
         if hdr.command_id == 0x00:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 outlet state ep198: ignoring Read Attributes from device"
             )
             return
@@ -219,7 +219,7 @@ class C4OutletStateCluster(CustomCluster):
                 try:
                     attr_id = self.find_attribute(attr).id
                 except KeyError:
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "C4 OutletState ep198: unknown attr name %r, skipping", attr
                     )
                     continue
@@ -282,7 +282,7 @@ class C4OutletOnOff(CustomCluster, OnOff):
         cmd = f"0g{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00"
         data = _build_c4_frame(0, cmd)
 
-        _LOGGER.info("C4 OutletOnOff: polling outlet %d — %s", self.OUTLET_IDX, cmd)
+        _LOGGER.debug("C4 OutletOnOff: polling outlet %d — %s", self.OUTLET_IDX, cmd)
         try:
             await device.request(
                 profile=C4_PROFILE_BUTTON,
@@ -311,7 +311,7 @@ class C4OutletOnOff(CustomCluster, OnOff):
         cmd = f"0s{chan:04x} c4.dm.tv {self.OUTLET_IDX:02x} 00 {level:02x}"
         data = _build_c4_frame(0, cmd)
 
-        _LOGGER.info("C4 OutletOnOff: sending %s", cmd)
+        _LOGGER.debug("C4 OutletOnOff: sending %s", cmd)
         try:
             await device.request(
                 profile=C4_PROFILE_BUTTON,
@@ -350,7 +350,7 @@ class C4OutletOnOff(CustomCluster, OnOff):
             self._update_attribute(OnOff.AttributeDefs.on_off.id, is_on)
             return self._SUCCESS
 
-        _LOGGER.info("C4 OutletOnOff: unhandled cmd=%s, passing through", command_id)
+        _LOGGER.debug("C4 OutletOnOff: unhandled cmd=%s, passing through", command_id)
         result = await super().command(
             command_id, *args,
             manufacturer=manufacturer, expect_reply=expect_reply,

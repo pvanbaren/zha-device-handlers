@@ -113,7 +113,7 @@ class C4DimmerOnOff(CustomCluster, OnOff):
         if command_id == OnOff.ServerCommandDefs.on.id:
             level = self._get_on_level()
             on_transition = self._get_on_transition()
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 OnOff: on() → move_to_level_with_on_off(%d, %d)",
                 level, on_transition,
             )
@@ -126,7 +126,7 @@ class C4DimmerOnOff(CustomCluster, OnOff):
 
         if command_id == OnOff.ServerCommandDefs.off.id:
             off_transition = self._get_off_transition()
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 OnOff: off() → move_to_level_with_on_off(0, %d)",
                 off_transition,
             )
@@ -264,7 +264,7 @@ class Control4APD120Dimmer(CustomDevice):
     def match(cls, device):
         model = getattr(device, 'model', None)
         manuf = getattr(device, 'manufacturer', None)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 APD120.match called: model=%r manuf=%r ieee=%s",
             model, manuf, getattr(device, 'ieee', '?'),
         )

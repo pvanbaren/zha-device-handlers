@@ -59,7 +59,7 @@ class C4BasicCluster(CustomCluster, Basic):
     async def async_initialize(self, from_cache=False):
         """Seed Basic cluster attribute cache on every HA startup."""
         model, manuf = self._resolve_c4_identity()
-        _LOGGER.warning(
+        _LOGGER.info(
             "C4 Basic async_initialize: ieee=%s from_cache=%s "
             "resolved model=%r manuf=%r",
             self.endpoint.device.ieee, from_cache, model, manuf,
@@ -162,7 +162,7 @@ class C4BasicCluster(CustomCluster, Basic):
     def _resolve_c4_identity(self):
         """Return (model, manufacturer) from the best available source."""
         device = self.endpoint.device
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 Basic: resolving identity for %s nwk=0x%04X",
             device.ieee, device.nwk,
         )
@@ -211,7 +211,7 @@ class C4BasicCluster(CustomCluster, Basic):
 
         Falls back to EP 196.  Returns (model_str, 'Control4') or (None, None).
         """
-        _LOGGER.info("C4 Basic: fetching model from device (Control4 query)")
+        _LOGGER.debug("C4 Basic: fetching model from device (Control4 query)")
         device = self.endpoint.device
         for ep_id in (2, 196):
             ep = device.endpoints.get(ep_id)
@@ -221,7 +221,7 @@ class C4BasicCluster(CustomCluster, Basic):
             if c4_cluster is None:
                 continue
             try:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 Basic: reading attr 0x0007 from ep%d cluster 0x%04X",
                     ep_id, C4_CLUSTER_ID,
                 )

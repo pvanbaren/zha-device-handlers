@@ -46,7 +46,7 @@ from c4_helpers import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_LOGGER.warning("=== C4 QUIRK FILE LOADED (multi-device) ===")
+_LOGGER.info("=== C4 QUIRK FILE LOADED (multi-device) ===")
 
 # Populated at the bottom of each device module, e.g.:
 #   from c4_hooks import _C4_MODEL_QUIRK_MAP
@@ -72,7 +72,7 @@ try:
                 and ep_id in C4_ENDPOINT_DEFAULTS
             ):
                 defaults = C4_ENDPOINT_DEFAULTS[ep_id]
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4: ep %s on %s — injecting defaults "
                     "(skipping Simple_Desc_req): profile=0x%04X clusters=%s",
                     ep_id, device_ieee,
@@ -94,7 +94,7 @@ try:
         _ZigpyEndpoint._c4_interview_patch  = True
         _LOGGER.info("C4: Installed endpoint interview patch")
     else:
-        _LOGGER.info("C4: Endpoint interview patch already installed")
+        _LOGGER.debug("C4: Endpoint interview patch already installed")
 
 except Exception as e:
     _LOGGER.error("C4: Failed to install interview patch: %s", e)
@@ -201,7 +201,7 @@ try:
         _ZigpyDevice._c4_custom_profile_patch       = True
         _LOGGER.info("C4: Installed custom_profile_packet_received patch")
     else:
-        _LOGGER.info("C4: custom_profile_packet_received patch already installed")
+        _LOGGER.debug("C4: custom_profile_packet_received patch already installed")
 
 except Exception as e:
     _LOGGER.error("C4: Failed to install custom_profile patch: %s", e)
@@ -222,7 +222,7 @@ try:
                           'registry', '_devices'):
             if hasattr(_zq, _reg_name):
                 _ZQ_REGISTRY = getattr(_zq, _reg_name)
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "C4: found quirk registry as zigpy.quirks.%s (type=%s)",
                     _reg_name, type(_ZQ_REGISTRY).__name__,
                 )
@@ -236,7 +236,7 @@ try:
             ):
                 if isinstance(obj, dict):
                     _ZQ_REGISTRY = obj
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "C4: found quirk registry via get_device defaults (type=dict)"
                     )
                     break
@@ -256,7 +256,7 @@ try:
             candidate = getattr(_registry_obj, _inner_name, None)
             if isinstance(candidate, dict) and candidate:
                 _ZQ_REGISTRY_DICT = candidate
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "C4: DeviceRegistry internal dict found at .%s (keys sample: %s)",
                     _inner_name, list(candidate.keys())[:3],
                 )
@@ -294,7 +294,7 @@ try:
                     if quirk_cls is not None:
                         device.model = model
                         device.manufacturer = manuf or "Control4"
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "C4 get_device: direct-instantiating %s for "
                             "model=%r manuf=%r ieee=%s",
                             quirk_cls.__name__, model, manuf, ieee,
@@ -317,9 +317,9 @@ try:
 
         _zq.get_device           = _c4_patched_get_device
         _zq._c4_get_device_patch = True
-        _LOGGER.warning("C4: patched zigpy.quirks.get_device")
+        _LOGGER.info("C4: patched zigpy.quirks.get_device")
     else:
-        _LOGGER.info("C4: get_device patch already installed")
+        _LOGGER.debug("C4: get_device patch already installed")
 
 except Exception as e:
     _LOGGER.error("C4: Failed to patch zigpy.quirks.get_device: %s", e)
@@ -381,7 +381,7 @@ try:
         _ZigpyApp._c4_broadcast_patch   = True
         _LOGGER.info("C4: Installed broadcast packet intercept patch")
     else:
-        _LOGGER.info("C4: Broadcast packet intercept patch already installed")
+        _LOGGER.debug("C4: Broadcast packet intercept patch already installed")
 
 except Exception as e:
     _LOGGER.error("C4: Failed to install broadcast patch: %s", e)

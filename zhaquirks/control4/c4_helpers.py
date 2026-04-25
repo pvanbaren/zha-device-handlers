@@ -160,7 +160,7 @@ _C4_IEEE_MODEL_MAP: dict[str, str] = _load_store()
 
 def _save_store(data: dict) -> None:
     os.makedirs(os.path.dirname(_C4_STORE_PATH), exist_ok=True)
-    _LOGGER.info("C4: saving IEEE→model map to %s: %s", _C4_STORE_PATH, data)
+    _LOGGER.debug("C4: saving IEEE→model map to %s: %s", _C4_STORE_PATH, data)
     with open(_C4_STORE_PATH, "w") as f:
         json.dump(data, f)
 
@@ -199,7 +199,7 @@ _C4_Z2IO_SETTINGS: dict[str, dict] = _load_z2io_settings()
 
 def _save_z2io_settings(data: dict) -> None:
     os.makedirs(os.path.dirname(_C4_Z2IO_SETTINGS_PATH), exist_ok=True)
-    _LOGGER.info("C4: saving Z2IO settings to %s: %s", _C4_Z2IO_SETTINGS_PATH, data)
+    _LOGGER.debug("C4: saving Z2IO settings to %s: %s", _C4_Z2IO_SETTINGS_PATH, data)
     with open(_C4_Z2IO_SETTINGS_PATH, "w") as f:
         json.dump(data, f)
 
@@ -248,7 +248,7 @@ async def _c4_send_commands(device, commands, c4_seq_start, label):
     for cmd in commands:
         frame = _build_c4_frame(c4_seq, cmd)
         try:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 provision [%s]: [%02x] %s (%d bytes)",
                 label, c4_seq, cmd, len(frame),
             )
@@ -301,7 +301,7 @@ async def _c4_send_controller_identity(device, source="unknown", zcl_seq=None):
     body += struct.pack('<HBBB', 0x000A, 0x00, 0x20, 0x02)
     data = zcl_hdr + body
 
-    _LOGGER.warning(
+    _LOGGER.debug(
         "C4 identity (%s): Read Attr Rsp to %s ep2→2 zcl_seq=0x%02x IEEE=%s data=%s",
         source, device.ieee, zcl_seq, coordinator_ieee, data.hex(),
     )
@@ -311,7 +311,7 @@ async def _c4_send_controller_identity(device, source="unknown", zcl_seq=None):
             src_ep=2, dst_ep=2,
             sequence=device.get_sequence(), data=data, expect_reply=False,
         )
-        _LOGGER.info("C4 identity (%s): sent successfully", source)
+        _LOGGER.debug("C4 identity (%s): sent successfully", source)
     except Exception as e:
         _LOGGER.error("C4 identity (%s): failed — %s", source, e)
 
@@ -339,7 +339,7 @@ async def _c4_report_controller_identity(device, source="unknown", zcl_seq=None)
     body += struct.pack('<HBB',  0x000A, 0x20, 0x02)
     data = zcl_hdr + body
 
-    _LOGGER.warning(
+    _LOGGER.debug(
         "C4 report identity (%s): Report Attr to %s ep2→2 zcl_seq=0x%02x IEEE=%s data=%s",
         source, device.ieee, zcl_seq, coordinator_ieee, data.hex(),
     )
@@ -349,7 +349,7 @@ async def _c4_report_controller_identity(device, source="unknown", zcl_seq=None)
             src_ep=2, dst_ep=2,
             sequence=device.get_sequence(), data=data, expect_reply=False,
         )
-        _LOGGER.info("C4 report identity (%s): sent successfully", source)
+        _LOGGER.debug("C4 report identity (%s): sent successfully", source)
     except Exception as e:
         _LOGGER.error("C4 report identity (%s): failed — %s", source, e)
 
@@ -364,7 +364,7 @@ async def _send_many_to_one_route_request(app) -> None:
             await app._ezsp.sendManyToOneRouteRequest(
                 concentratorType=0xFFF9, radius=5,
             )
-            _LOGGER.info("Many-to-One Route Request sent via EZSP")
+            _LOGGER.debug("Many-to-One Route Request sent via EZSP")
             return
         except Exception as exc:
             _LOGGER.warning("EZSP sendManyToOneRouteRequest failed — %s", exc)
@@ -376,7 +376,7 @@ async def _send_many_to_one_route_request(app) -> None:
                 znp_c.ZDO.ExtRouteDisc.Req(Dst=0xFFFC, Options=0x08, Radius=5),
                 RspSchema=znp_c.ZDO.ExtRouteDisc.Rsp,
             )
-            _LOGGER.info("Many-to-One Route Request sent via ZNP")
+            _LOGGER.debug("Many-to-One Route Request sent via ZNP")
             return
         except Exception as exc:
             _LOGGER.warning("ZNP ExtRouteDisc failed — %s", exc)
@@ -398,36 +398,36 @@ def _c4_persist_device(device, source="unknown"):
     if hasattr(app, 'device_updated'):
         try:
             app.device_updated(device)
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 persist (%s): device_updated() succeeded for %s model=%r",
                 source, device.ieee, device.model,
             )
             return
         except Exception as e:
-            _LOGGER.warning("C4 persist (%s): device_updated() raised %s", source, e)
+            _LOGGER.debug("C4 persist (%s): device_updated() raised %s", source, e)
 
     try:
         app.listener_event("device_updated", device)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 persist (%s): listener_event(device_updated) fired for %s model=%r",
             source, device.ieee, device.model,
         )
         return
     except Exception as e:
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 persist (%s): listener_event(device_updated) raised %s", source, e
         )
 
     if hasattr(app, '_dblistener') and hasattr(app._dblistener, 'device_updated'):
         try:
             app._dblistener.device_updated(device)
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 persist (%s): _dblistener.device_updated() succeeded for %s model=%r",
                 source, device.ieee, device.model,
             )
             return
         except Exception as e:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 persist (%s): _dblistener.device_updated() raised %s", source, e
             )
 
@@ -518,7 +518,7 @@ def _c4_sniff_model(device, inner: bytes) -> None:
                 parts = raw.split(":")
                 model = parts[2] if len(parts) >= 3 else raw
                 if model and model not in _INVALID_MODELS:
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "C4 sniffer: caching ieee=%r -> model=%r",
                         device.ieee, model,
                     )
@@ -533,7 +533,7 @@ def _c4_sniff_model(device, inner: bytes) -> None:
                                 f"model_report_{mod}",
                                 zcl_seq=dev.get_sequence(),
                             )
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "C4 sniffer: identity sent for %s model=%r",
                                 dev.ieee, mod,
                             )
@@ -544,7 +544,7 @@ def _c4_sniff_model(device, inner: bytes) -> None:
                             )
                         try:
                             await _send_many_to_one_route_request(dev.application)
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "C4 sniffer: MTORR sent for %s", dev.ieee
                             )
                         except Exception as e:
@@ -557,7 +557,7 @@ def _c4_sniff_model(device, inner: bytes) -> None:
                 if not device.model or device.model in _INVALID_MODELS:
                     device.model = model
                     device.manufacturer = "Control4"
-                    _LOGGER.warning(
+                    _LOGGER.info(
                         "C4 sniffer: set device.model=%r manufacturer=%r on 0x%04X",
                         model, device.manufacturer, device.nwk,
                     )
@@ -565,14 +565,14 @@ def _c4_sniff_model(device, inner: bytes) -> None:
 
                     async def _deferred_persist(dev=device):
                         await asyncio.sleep(5)
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "C4 sniffer: deferred persist for %s model=%r",
                             dev.ieee, dev.model,
                         )
                         _c4_persist_device(dev, "sniffer_deferred")
                     asyncio.ensure_future(_deferred_persist())
                 else:
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "C4 sniffer: device.model already=%r on 0x%04X — not overwriting",
                         device.model, device.nwk,
                     )
@@ -593,11 +593,11 @@ class C4DimmerManufCluster(CustomCluster):
     ep_attribute = "c4_dimmer_manuf"
 
     def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
-        _LOGGER.info("C4 manuf: hdr=%s args=%s", hdr, args)
+        _LOGGER.debug("C4 manuf: hdr=%s args=%s", hdr, args)
         super().handle_cluster_request(hdr, args, dst_addressing=dst_addressing)
 
     def _update_attribute(self, attrid, value):
-        _LOGGER.info("C4 manuf attr: 0x%04X = %s", attrid, value)
+        _LOGGER.debug("C4 manuf attr: 0x%04X = %s", attrid, value)
         super()._update_attribute(attrid, value)
 
 
@@ -620,7 +620,7 @@ class C4ConfigCluster(CustomCluster):
         super()._update_attribute(attrid, value)
 
         if attrid == C4_ATTR_MODEL and isinstance(value, str):
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 config model string: raw=%r ep=%s", value,
                 self.endpoint.endpoint_id,
             )
@@ -630,13 +630,13 @@ class C4ConfigCluster(CustomCluster):
             if not device.model or device.model in _INVALID_MODELS:
                 device.model = new_model
                 device.manufacturer = "Control4"
-                _LOGGER.warning(
+                _LOGGER.info(
                     "C4 config: set device.model=%r on %s",
                     device.model, device.ieee,
                 )
                 _c4_persist_device(device, "c4_config_attr")
             else:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 config: device.model already=%r on %s — not overwriting",
                     device.model, device.ieee,
                 )
@@ -647,17 +647,17 @@ class C4ConfigCluster(CustomCluster):
 
         elif attrid == C4_ATTR_DIM_LEVEL:
             level_raw = value if isinstance(value, int) else 0
-            _LOGGER.info(
+            _LOGGER.debug(
                 "C4 config: dim level report = %d (ep %s)",
                 level_raw, self.endpoint.endpoint_id,
             )
             _sync_ep1_level(self.endpoint.device, level_raw, "ep2_report")
 
         else:
-            _LOGGER.info("C4 config: 0x%04X = %s", attrid, value)
+            _LOGGER.debug("C4 config: 0x%04X = %s", attrid, value)
 
     def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
-        _LOGGER.info("C4 config request: hdr=%s", hdr)
+        _LOGGER.debug("C4 config request: hdr=%s", hdr)
         super().handle_cluster_request(hdr, args, dst_addressing=dst_addressing)
 
     def handle_message(self, hdr, args):
@@ -682,7 +682,7 @@ class C4ConfigCluster(CustomCluster):
 
         # cmd 0x00: Read Attributes — device polling for controller identity
         if hdr.command_id == 0x00:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "C4 config: Read Attributes on ep %s tsn=0x%02x — "
                 "sending controller identity",
                 self.endpoint.endpoint_id, hdr.tsn,
@@ -702,7 +702,7 @@ class C4ConfigCluster(CustomCluster):
             try:
                 return super().handle_message(hdr, args)
             except Exception as e:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "C4 config ep %s: cmd 0x01 base handler: %s",
                     self.endpoint.endpoint_id, e,
                 )
@@ -714,7 +714,7 @@ class C4ConfigCluster(CustomCluster):
                 remaining = args
                 while remaining:
                     attr, remaining = foundation.Attribute.deserialize(remaining)
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "C4 config report: ep=%s attr=0x%04x value=%r",
                         self.endpoint.endpoint_id, attr.attrid, attr.value.value,
                     )

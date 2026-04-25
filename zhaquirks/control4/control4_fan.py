@@ -146,7 +146,7 @@ class C4FanControlCluster(CustomCluster, Fan):
             full_cmd = f"0s{chan:04x} {cmd}"
             data = _build_c4_frame(0, full_cmd)
             try:
-                _LOGGER.info("C4 Fan provision: %s", full_cmd)
+                _LOGGER.debug("C4 Fan provision: %s", full_cmd)
                 await device.request(
                     profile=C4_PROFILE_BUTTON,
                     cluster=C4_CLUSTER_ID,
@@ -226,7 +226,7 @@ class C4FanControlCluster(CustomCluster, Fan):
             await self._set_fan_speed(mode)
             # Optimistic local update; device will confirm with c4.dmx.fs
             self._update_attribute(fan_mode_id, mode)
-            _LOGGER.info("C4 Fan: fan_mode=%d sent via c4.dmx.fsc", mode)
+            _LOGGER.debug("C4 Fan: fan_mode=%d sent via c4.dmx.fsc", mode)
 
         return [[foundation.WriteAttributesStatusRecord(ZCLStatus.SUCCESS)]]
 
@@ -246,7 +246,7 @@ class C4FanControlCluster(CustomCluster, Fan):
         cmd     = f"0s{chan:04x} c4.dmx.fsc 00 {mode:02x}"
         data    = _build_c4_frame(0, cmd)
 
-        _LOGGER.info("C4 Fan: sending %s", cmd)
+        _LOGGER.debug("C4 Fan: sending %s", cmd)
         try:
             await device.request(
                 profile=C4_PROFILE_BUTTON,
@@ -307,7 +307,7 @@ class C4FanButtonCluster(C4ButtonCluster):
                     "C4 fan: c4.dmx.fs speed out of range: %d", speed
                 )
                 return
-            _LOGGER.info("C4 fan: c4.dmx.fs speed=%d", speed)
+            _LOGGER.debug("C4 fan: c4.dmx.fs speed=%d", speed)
             self._update_fan_mode(speed)
         except (IndexError, ValueError) as e:
             _LOGGER.warning(
@@ -335,19 +335,19 @@ class C4FanButtonCluster(C4ButtonCluster):
         0x01 = top/up button, 0x05 = bottom/down button (matches dimmer map).
         """
         if button_id == 0x01 and click_count >= 1:
-            _LOGGER.info("C4 fan: top button confirmed — reporting max speed")
+            _LOGGER.debug("C4 fan: top button confirmed — reporting max speed")
             self._update_fan_mode(4)
         elif button_id == 0x02 and click_count >= 1:
-            _LOGGER.info("C4 fan: second button confirmed — reporting medium speed")
+            _LOGGER.debug("C4 fan: second button confirmed — reporting medium speed")
             self._update_fan_mode(3)
         elif button_id == 0x03 and click_count >= 1:
-            _LOGGER.info("C4 fan: third button confirmed — reporting low speed")
+            _LOGGER.debug("C4 fan: third button confirmed — reporting low speed")
             self._update_fan_mode(2)
         elif button_id == 0x04 and click_count >= 1:
-            _LOGGER.info("C4 fan: fourth button confirmed — redirecting to low speed")
+            _LOGGER.debug("C4 fan: fourth button confirmed — redirecting to low speed")
             self._update_fan_mode(1)
         elif button_id == 0x05 and click_count >= 1:
-            _LOGGER.info("C4 fan: bottom button confirmed — reporting off")
+            _LOGGER.debug("C4 fan: bottom button confirmed — reporting off")
             self._update_fan_mode(0)
 
     # ------------------------------------------------------------------
@@ -366,7 +366,7 @@ class C4FanButtonCluster(C4ButtonCluster):
                 fan_cluster._update_attribute(
                     Fan.AttributeDefs.fan_mode.id, fan_mode
                 )
-                _LOGGER.info("C4 fan: EP1 fan_mode → %d", fan_mode)
+                _LOGGER.debug("C4 fan: EP1 fan_mode → %d", fan_mode)
         except Exception:
             _LOGGER.warning("C4 fan: fan_mode update failed", exc_info=True)
 
@@ -391,12 +391,12 @@ class Control4C4SF120FanController(CustomDevice):
     def match(cls, device):
         model = getattr(device, 'model', None)
         manuf = getattr(device, 'manufacturer', None)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 4SF120.match called: model=%r manuf=%r ieee=%s",
             model, manuf, getattr(device, 'ieee', '?'),
         )
         if model == "C4-4SF120":
-            _LOGGER.warning("C4 4SF120.match: accepting on model match")
+            _LOGGER.debug("C4 4SF120.match: accepting on model match")
             return True
         return super().match(device)
 

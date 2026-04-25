@@ -80,12 +80,12 @@ class Control4KC120277SceneController(CustomDevice):
     def match(cls, device):
         model = getattr(device, "model", None)
         manuf = getattr(device, "manufacturer", None)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 KC120277.match called: model=%r manuf=%r ieee=%s",
             model, manuf, getattr(device, "ieee", "?"),
         )
         if model == "C4-KC120277":
-            _LOGGER.warning("C4 KC120277.match: accepting on model match")
+            _LOGGER.debug("C4 KC120277.match: accepting on model match")
             return True
         return super().match(device)
 

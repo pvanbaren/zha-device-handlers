@@ -74,7 +74,7 @@ class C4SwitchOnOff(CustomCluster, OnOff):
         tsn=None,
         **kwargs,
     ):
-        _LOGGER.info(
+        _LOGGER.debug(
             "C4 SwitchOnOff: cmd=%s expect_reply=%s", command_id, expect_reply
         )
         result = await super().command(
@@ -96,7 +96,7 @@ class Control4SW120Switch(CustomDevice):
     def match(cls, device):
         model = getattr(device, 'model', None)
         manuf = getattr(device, 'manufacturer', None)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "C4 SW120.match called: model=%r manuf=%r ieee=%s",
             model, manuf, getattr(device, 'ieee', '?'),
         )
