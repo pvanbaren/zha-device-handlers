@@ -255,43 +255,6 @@ def _build_c4_frame(seq_num, ascii_cmd: str) -> bytes:
     return (ascii_cmd + "\r\n").encode("ascii")
 
 
-async def _c4_send_commands(device, commands, c4_seq_start, label):
-    """Send a list of C4 ASCII commands to a device.
-
-    Returns (success_count, fail_count, next_c4_seq).
-    """
-    c4_seq = c4_seq_start
-    success_count = fail_count = 0
-
-    for cmd in commands:
-        frame = _build_c4_frame(c4_seq, cmd)
-        try:
-            _LOGGER.debug(
-                "C4 provision [%s]: [%02x] %s (%d bytes)",
-                label, c4_seq, cmd, len(frame),
-            )
-            await device.request(
-                profile=C4_PROFILE_NETWORK,
-                cluster=C4_CLUSTER_ID,
-                src_ep=1, dst_ep=1,
-                sequence=device.get_sequence(),
-                data=frame,
-                expect_reply=False,
-            )
-            success_count += 1
-        except Exception as e:
-            _LOGGER.warning(
-                "C4 provision [%s]: [%02x] FAILED %s — %s",
-                label, c4_seq, cmd, e,
-            )
-            fail_count += 1
-
-        c4_seq = (c4_seq + 1) & 0xFF
-        await asyncio.sleep(C4_PROVISION_DELAY)
-
-    return success_count, fail_count, c4_seq
-
-
 async def _c4_send_controller_identity(device, source="unknown", zcl_seq=None):
     """Send ZCL Read Attributes Response for attrs 0x0008/0x0009/0x000A on EP 2.
 
