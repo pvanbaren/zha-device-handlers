@@ -125,8 +125,9 @@ class IoMode(t.enum8):
 # 0xFC42 — C4 button events
 # 0xFC43 — C4LEDCluster
 # 0xFC44 — C4RampCluster
-# 0xFC45 — C4IoModeCluster (this one)
-_IO_MODE_CLUSTER_ID = 0xFC45
+# 0xFC45 — claimed by ZHA's SmartThingsHumidityClusterHandler — DO NOT USE
+# 0xFC46 — C4IoModeCluster (this one)
+_IO_MODE_CLUSTER_ID = 0xFC46
 
 
 class C4IoModeCluster(CustomCluster):
