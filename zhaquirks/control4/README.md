@@ -218,14 +218,18 @@ on key-down (the C4 `c4.zr.bb` "button begin" event) followed by a
 device has no separate hold / click-count protocol — to detect a long
 press, measure the gap between the two events in your HA automation.
 
-The Event entity names follow the physical layout: `room_off`, `watch`,
-`control4`, `listen`, `list`, `i`, `ii`, `iii`, `guide`, `page_up`,
-`page_down`, `prev`, the d-pad (`up` / `down` / `left` / `right` /
-`select`), `vol_up` / `vol_down` / `ch_up` / `ch_down`, `mute` / `info` /
-`menu` / `cancel`, transport controls (`rewind`, `dvr`, `fast_forward`,
-`skip_back`, `play`, `skip_forward`, `record`, `pause`, `stop`), the four
-color buttons (`red` / `green` / `yellow` / `blue`), and the numeric keypad
-(`digit_0`..`digit_9`, `star`, `hash`).
+The Event entity names follow the physical layout:
+
+- Top soft / activity row: `room_off`, `watch`, `control4`, `listen`,
+  `list`, `i`, `ii`, `iii`
+- Nav extras: `guide`, `page_up`, `page_down`, `prev`
+- D-pad + rockers: `up` / `down` / `left` / `right` / `select`,
+  `volume_up` / `volume_down` / `channel_up` / `channel_down`
+- UI cluster: `volume_mute`, `info`, `menu`, `cancel`
+- Transport: `reverse` (Rewind), `dvr`, `forward` (Fast Forward),
+  `skip_back`, `play`, `skip_forward`, `record`, `pause`, `stop`
+- Color buttons: `red` / `green` / `yellow` / `blue`
+- Numeric keypad: `digit_0` … `digit_9`, `star`, `hash`
 
 **LCD screen support is not implemented.** The remote will still operate
 as a button input without a controller answering its `c4.ln.*` UI
