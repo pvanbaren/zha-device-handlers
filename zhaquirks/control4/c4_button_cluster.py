@@ -1,12 +1,15 @@
-"""C4 button clusters — shared across dimmer, switch, scene controller, outlet.
+"""C4 button clusters — shared across dimmer, switch, scene controller, outlet, remote.
 
 Classes exported:
   C4ButtonCluster                  — base, used by dimmer
   C4SwitchButtonCluster            — on/off switch variant
   C4SceneControllerButtonCluster   — KC120277 8-button keypad
   C4DualOutletButtonCluster        — LOZ-5S1-W dual outlet
+  C4RemoteButtonCluster            — C4-SR260 50-button IR/Zigbee remote
   _KC120277_BUTTON_CLUSTERS        — per-button virtual cluster dict (btn_id → class)
+  _SR260_BUTTON_CLUSTERS           — per-button virtual cluster dict for SR260
   _make_kc120277_button_cluster()  — factory for per-button EventableCluster
+  _make_sr260_button_cluster()     — factory for SR260 per-button EventableCluster
 """
 
 import logging
@@ -27,6 +30,7 @@ from zhaquirks.const import (
     LONG_PRESS,
     LONG_RELEASE,
     SHORT_PRESS,
+    SHORT_RELEASE,
     TRIPLE_PRESS,
     QUADRUPLE_PRESS,
 )
@@ -39,6 +43,8 @@ from c4_helpers import (
     KC120277_BUTTON_EP_MAP,
     KC120277_BUTTON_MAP,
     OUTLET_EP_MAP,
+    SR260_BUTTON_EP_MAP,
+    SR260_BUTTON_MAP,
     _sync_ep1_level,
     _sync_ep1_onoff,
 )
@@ -215,6 +221,25 @@ class C4ButtonCluster(EventableCluster):
             if data:
                 _LOGGER.debug("C4 state: transition complete, button = %s", data[0])
                 self._handle_button_event(namespace, data[0])
+        elif namespace == "c4.zr.bb":
+            # SR260 remote — button begin (key down). data[0] = button id (hex).
+            if data:
+                self._handle_button_event(namespace, data[0])
+        elif namespace == "c4.zr.be":
+            # SR260 remote — button end (key up).
+            if data:
+                self._handle_button_event(namespace, data[0])
+        elif namespace in ("c4.zr.mot", "c4.zr.bl", "c4.zr.tm", "c4.zr.loc"):
+            # SR260 wake / backlight / clock / locale — protocol-level only,
+            # no HA event needed.
+            _LOGGER.debug("C4 state: %s data=%s (no event)", namespace, data)
+        elif namespace.startswith("c4.ln."):
+            # SR260 LCD / list-rendering protocol — handled separately if/when
+            # screen support is added. Silence here so it does not log as
+            # "unknown" on every menu interaction.
+            _LOGGER.debug(
+                "C4 state: ignoring screen command %s data=%s", namespace, data
+            )
         else:
             # Unknown namespace from a known device — keep at INFO so the user
             # sees the protocol field that is going unhandled.
@@ -520,3 +545,132 @@ class C4DualOutletButtonCluster(C4SwitchButtonCluster):
     def _sync_cc_event(self, button_id, click_count):
         # On dual outlet devices, cc button_id is the outlet index
         self._sync_onoff_for_outlet(button_id, click_count == 1)
+
+
+# ---------------------------------------------------------------------------
+# SR260 remote variant
+# ---------------------------------------------------------------------------
+
+def _make_sr260_button_cluster(button_id: int, button_name: str) -> type:
+    """Return a unique EventableCluster class for one SR260 physical button.
+
+    Each class lives on its own virtual endpoint (EP 100+button_id), so ZHA
+    creates one independent Event entity per button.  Physical Zigbee frames
+    never arrive on these endpoints — routing is done by
+    C4RemoteButtonCluster._fire_button_event().
+    """
+
+    class _ButtonCluster(EventableCluster):
+        cluster_id   = C4_BUTTON_CLUSTER_ID
+        name         = f"SR260 {button_name}"
+        ep_attribute = f"c4_sr260_btn_{button_id:02x}"
+        _c4_custom_handler = False  # no physical routing
+
+        def handle_message(self, hdr, args):
+            pass
+
+        def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
+            pass
+
+    _ButtonCluster.__name__     = f"C4SR260Button{button_id:02X}Cluster"
+    _ButtonCluster.__qualname__ = _ButtonCluster.__name__
+    return _ButtonCluster
+
+
+# One cluster class per SR260 button — keyed by button_id (0x00..0x31)
+_SR260_BUTTON_CLUSTERS: dict[int, type] = {
+    btn_id: _make_sr260_button_cluster(btn_id, name)
+    for btn_id, name in SR260_BUTTON_MAP.items()
+}
+
+
+class C4RemoteButtonCluster(C4ButtonCluster):
+    """Button events for C4-SR260 IR/Zigbee remote.
+
+    The SR260 uses the c4.zr.* / c4.ln.* namespaces (not c4.dmx.* like
+    keypads).  Each physical press emits a `bb` (button-begin) followed by
+    a `be` (button-end) — there is no separate hold/click-count protocol;
+    duration is left to the receiver.
+
+    Event mapping:
+      c4.zr.bb <btn> ...   →  SHORT_PRESS    on virtual EP 100+btn
+      c4.zr.be <btn> ...   →  SHORT_RELEASE  on virtual EP 100+btn
+
+    Other observed namespaces are logged and ignored (mot/tm/loc/bl/ln.*) —
+    a quirk that wants to drive the LCD or sync the clock can subclass and
+    override `_handle_state_announcement`.
+    """
+
+    name         = "Control4 SR260 Remote Button Events"
+    ep_attribute = "c4_remote_buttons"
+    BUTTON_MAP   = SR260_BUTTON_MAP
+
+    def _handle_light_state(self, fields):
+        pass  # no load on a remote
+
+    def _sync_state_from_event(self, event_code, button_id, params):
+        pass
+
+    def _sync_cc_event(self, button_id, click_count):
+        pass
+
+    def _handle_state_announcement(self, namespace, data):
+        if namespace == "c4.zr.bb" and data:
+            self._fire_button_event(data[0], SHORT_PRESS)
+        elif namespace == "c4.zr.be" and data:
+            self._fire_button_event(data[0], SHORT_RELEASE)
+        elif namespace == "c4.zr.mot":
+            _LOGGER.debug("C4 SR260: pickup / wake event")
+        elif namespace == "c4.zr.bl":
+            _LOGGER.debug("C4 SR260: backlight event %s", data)
+        elif namespace.startswith("c4.ln.") or namespace in (
+            "c4.zr.tm", "c4.zr.loc",
+        ):
+            _LOGGER.debug(
+                "C4 SR260: ignoring screen / config command %s %s",
+                namespace, data,
+            )
+        else:
+            _LOGGER.info(
+                "C4 SR260: unhandled namespace %s data=%s", namespace, data
+            )
+
+    def _fire_button_event(self, button_hex: str, action: str) -> None:
+        try:
+            button_id = int(button_hex, 16)
+        except (ValueError, TypeError):
+            _LOGGER.warning("C4 SR260: invalid button hex %r", button_hex)
+            return
+
+        ep_id = SR260_BUTTON_EP_MAP.get(button_id)
+        if ep_id is None:
+            _LOGGER.warning(
+                "C4 SR260: unknown button 0x%02x (no entry in SR260_BUTTON_EP_MAP)",
+                button_id,
+            )
+            return
+
+        ep = self.endpoint.device.endpoints.get(ep_id)
+        if ep is None:
+            _LOGGER.warning(
+                "C4 SR260: virtual EP %d not in device endpoints "
+                "(re-pair after quirk update?)", ep_id,
+            )
+            return
+
+        btn_cluster = ep.in_clusters.get(C4_BUTTON_CLUSTER_ID)
+        if btn_cluster is None:
+            _LOGGER.warning(
+                "C4 SR260: no cluster 0x%04X on EP %d",
+                C4_BUTTON_CLUSTER_ID, ep_id,
+            )
+            return
+
+        button_name = SR260_BUTTON_MAP.get(button_id, f"button_{button_id:#04x}")
+        btn_cluster.listener_event(
+            "zha_send_event", action,
+            {BUTTON: button_name, ENDPOINT_ID: ep_id},
+        )
+        _LOGGER.debug(
+            "C4 SR260: fired %r for %s on EP %d", action, button_name, ep_id,
+        )

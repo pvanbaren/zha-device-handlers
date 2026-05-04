@@ -41,6 +41,7 @@ from zhaquirks.const import (
     OUTPUT_CLUSTERS,
     PROFILE_ID,
     SHORT_PRESS,
+    SHORT_RELEASE,
     TRIPLE_PRESS,
     TURN_OFF,
     TURN_ON,
@@ -129,11 +130,75 @@ DIMMER_EVENT_MAP = {
     "hc": LONG_PRESS,
     "he": LONG_RELEASE,
     "cc": "click_count",
+    # SR260 remote button-begin / button-end events (c4.zr.bb / c4.zr.be)
+    "bb": SHORT_PRESS,
+    "be": SHORT_RELEASE,
 }
 
 # Virtual endpoint IDs for KC120277 per-button Event entities (ZHA-side only)
 KC120277_BUTTON_EP_MAP: dict[int, int] = {
     btn_id: 200 + btn_id for btn_id in range(8)
+}
+
+# C4-SR260: 50 button codes (0x00..0x31) — see
+# documentation/control4-sr260-remote-protocol.md for the layout.
+SR260_BUTTON_MAP: dict[int, str] = {
+    0x00: "room_off",
+    0x01: "watch",
+    0x02: "control4",
+    0x03: "listen",
+    0x04: "list",
+    0x05: "i",
+    0x06: "ii",
+    0x07: "iii",
+    0x08: "guide",
+    0x09: "page_up",
+    0x0a: "page_down",
+    0x0b: "prev",
+    0x0c: "vol_up",
+    0x0d: "up",
+    0x0e: "ch_up",
+    0x0f: "left",
+    0x10: "select",
+    0x11: "right",
+    0x12: "vol_down",
+    0x13: "down",
+    0x14: "ch_down",
+    0x15: "mute",
+    0x16: "info",
+    0x17: "menu",
+    0x18: "cancel",
+    0x19: "rewind",
+    0x1a: "dvr",
+    0x1b: "fast_forward",
+    0x1c: "skip_back",
+    0x1d: "play",
+    0x1e: "skip_forward",
+    0x1f: "record",
+    0x20: "pause",
+    0x21: "stop",
+    0x22: "red",
+    0x23: "green",
+    0x24: "yellow",
+    0x25: "blue",
+    0x26: "digit_1",
+    0x27: "digit_2",
+    0x28: "digit_3",
+    0x29: "digit_4",
+    0x2a: "digit_5",
+    0x2b: "digit_6",
+    0x2c: "digit_7",
+    0x2d: "digit_8",
+    0x2e: "digit_9",
+    0x2f: "star",
+    0x30: "digit_0",
+    0x31: "hash",
+}
+
+# Virtual endpoint IDs for SR260 per-button Event entities (EPs 100..149,
+# all within Zigbee's 1..240 application range).
+SR260_BUTTON_EP_MAP: dict[int, int] = {
+    btn_id: 100 + btn_id for btn_id in SR260_BUTTON_MAP
 }
 
 # LOZ-5S1-W: outlet index → endpoint id

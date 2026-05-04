@@ -410,6 +410,11 @@ try:
 except Exception as _e:
     _LOGGER.error("C4: failed to import control4_z2io_zp — %s", _e)
 
+try:
+    import control4_remote           # registers "C4-SR260"
+except Exception as _e:
+    _LOGGER.error("C4: failed to import control4_remote — %s", _e)
+
 # Other device modules self-register when they import c4_hooks (this file),
 # so they are always loaded before any get_device call — no explicit import
 # needed for control4_dimmer, control4_switch, control4_outlet, etc.

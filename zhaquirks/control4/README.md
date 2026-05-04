@@ -22,6 +22,7 @@ controller required.
 | C4-KC120277 | 8-Button Scene Controller | 8 event entities (press, hold, release) |
 | loz-5s1-w | Dual Switched Outlet | 2 switches (one per outlet) |
 | C4-Z2IO-ZP | Zigbee IO Module | 2 switches (relays), 5 binary sensors (contacts), temperature, humidity |
+| C4-SR260 | IR/Zigbee Remote (50 buttons + LCD) | 50 event entities (press, release), battery |
 
 All Control4 Zigbee devices use a proprietary text-based serial protocol
 layered on top of ZigBee APS instead of standard ZCL clusters. These quirks
@@ -205,6 +206,33 @@ the LED Configuration section below.
 Exposes two independent switch entities, one per outlet. Each outlet can be
 toggled individually.
 
+### C4-SR260 Remote
+
+A 50-button IR / Zigbee remote with an LCD screen. Battery-powered (sleepy
+end-device).
+
+The quirk exposes one HA Event entity per physical key (50 entities total)
+and a battery sensor. Each press emits a `remote_button_short_press` action
+on key-down (the C4 `c4.zr.bb` "button begin" event) followed by a
+`remote_button_short_release` on key-up (`c4.zr.be` "button end"). The
+device has no separate hold / click-count protocol — to detect a long
+press, measure the gap between the two events in your HA automation.
+
+The Event entity names follow the physical layout: `room_off`, `watch`,
+`control4`, `listen`, `list`, `i`, `ii`, `iii`, `guide`, `page_up`,
+`page_down`, `prev`, the d-pad (`up` / `down` / `left` / `right` /
+`select`), `vol_up` / `vol_down` / `ch_up` / `ch_down`, `mute` / `info` /
+`menu` / `cancel`, transport controls (`rewind`, `dvr`, `fast_forward`,
+`skip_back`, `play`, `skip_forward`, `record`, `pause`, `stop`), the four
+color buttons (`red` / `green` / `yellow` / `blue`), and the numeric keypad
+(`digit_0`..`digit_9`, `star`, `hash`).
+
+**LCD screen support is not implemented.** The remote will still operate
+as a button input without a controller answering its `c4.ln.*` UI
+exchanges, but the LCD will show "Loading Room…" until it sleeps. See
+`documentation/control4-sr260-remote-protocol.md` for the screen / menu
+protocol if you want to extend the quirk.
+
 ### C4-Z2IO-ZP IO Module
 
 A versatile IO module with 2 relay outputs and 5 contact inputs, commonly used
@@ -259,6 +287,7 @@ control4/
 ├── control4_scene_controller.py C4-KC120277 quirk
 ├── control4_outlet.py           loz-5s1-w quirk
 ├── control4_z2io_zp.py          C4-Z2IO-ZP quirk
+├── control4_remote.py           C4-SR260 quirk
 ├── c4_z2io_zp.py                Z2IO-ZP state machine & protocol handler
 ├── c4_basic_cluster.py          Model/manufacturer resolution for C4 devices
 ├── c4_button_cluster.py         Button event parsing & state sync
