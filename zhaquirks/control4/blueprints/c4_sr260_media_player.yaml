@@ -1,0 +1,551 @@
+blueprint:
+  name: Control4 SR260 Remote → Media Player
+  description: >
+    Maps Control4 C4-SR260 button presses to a user-selectable media player and
+    a separately user-selectable volume target.
+
+    Direct mappings (hardcoded):
+      Vol+, Vol-, Mute                            →  volume target (media_player)
+      Play, Pause, Stop, Skip Fwd/Back, Rewind,
+        Fast Forward, Record, D-pad, Select,
+        Cancel (Back), Control4 (Home), Menu,
+        Info, Guide, Channel ±, Page ±,
+        Red/Green/Yellow/Blue, digits 0-9, *, #   →  remote.send_command on
+                                                     a user-selectable remote entity
+
+    Every command sent via remote.send_command has its command string as a
+    user-editable input — spellings differ by integration: Android TV uses
+    DPAD_UP / MEDIA_PLAY, Apple TV and Roku use up / play, LG webOS uses UP /
+    PLAY, etc. Defaults are Android TV. Digits 0-9 share one template input
+    where {n} is replaced with the digit (default '{n}' → '0'..'9').
+
+    All remaining buttons (Room Off, Watch, Listen, List, I/II/III, Prev, DVR)
+    expose an optional Action input that is invoked on press.
+
+    Requires the custom C4-SR260 ZHA quirk (control4_remote.py); button names
+    come from SR260_BUTTON_MAP and the trigger fires on remote_button_short_press.
+  domain: automation
+  input:
+    remote:
+      name: Remote
+      description: The Control4 SR260 remote device.
+      selector:
+        device:
+          filter:
+            - integration: zha
+              manufacturer: Control4
+              model: C4-SR260
+
+    volume_target:
+      name: Volume Target
+      description: >
+        Target for Vol+ / Vol- / Mute. Often the same as the media player, but
+        can be a separate entity (e.g. an AVR while the media player is a Chromecast).
+      selector:
+        entity:
+          domain: media_player
+
+    remote_target:
+      name: Remote Target (D-pad / Select)
+      description: >
+        A 'remote' entity that should receive D-pad navigation commands.
+        Common integrations: Android TV / Google TV, Apple TV, Roku, LG webOS,
+        Samsung TV, Harmony Hub. The exact command spelling varies by integration —
+        adjust the five command-string inputs below to match.
+      selector:
+        entity:
+          domain: remote
+
+    up_command:
+      name: Up command string
+      description: Command sent for D-pad Up. Examples — Android TV:DPAD_UP, Apple TV/Roku:up, LG:UP.
+      default: DPAD_UP
+      selector:
+        text:
+    down_command:
+      name: Down command string
+      default: DPAD_DOWN
+      selector:
+        text:
+    left_command:
+      name: Left command string
+      default: DPAD_LEFT
+      selector:
+        text:
+    right_command:
+      name: Right command string
+      default: DPAD_RIGHT
+      selector:
+        text:
+    select_command:
+      name: Select / OK command string
+      description: Examples — Android TV:DPAD_CENTER, Apple TV/Roku:select, LG:ENTER.
+      default: DPAD_CENTER
+      selector:
+        text:
+
+    play_command:
+      name: Play command string
+      description: Examples — Android TV:MEDIA_PLAY, Apple TV/Roku:play, LG:PLAY.
+      default: MEDIA_PLAY
+      selector:
+        text:
+    pause_command:
+      name: Pause command string
+      default: MEDIA_PAUSE
+      selector:
+        text:
+    stop_command:
+      name: Stop command string
+      default: MEDIA_STOP
+      selector:
+        text:
+    skip_forward_command:
+      name: Skip Forward command string
+      description: Next track / chapter forward.
+      default: MEDIA_NEXT
+      selector:
+        text:
+    skip_back_command:
+      name: Skip Back command string
+      description: Previous track / chapter back.
+      default: MEDIA_PREVIOUS
+      selector:
+        text:
+    rewind_command:
+      name: Rewind command string
+      default: MEDIA_REWIND
+      selector:
+        text:
+    fast_forward_command:
+      name: Fast Forward command string
+      default: MEDIA_FAST_FORWARD
+      selector:
+        text:
+    record_command:
+      name: Record command string
+      default: MEDIA_RECORD
+      selector:
+        text:
+
+    cancel_command:
+      name: Cancel / Back command string
+      description: Examples — Android TV / LG:BACK, Roku:back, Samsung:KEY_RETURN, Apple TV:menu.
+      default: BACK
+      selector:
+        text:
+
+    home_command:
+      name: Control4 / Home command string
+      description: Examples — Android TV:HOME, Roku/Apple TV:home, LG:HOME.
+      default: HOME
+      selector:
+        text:
+    menu_command:
+      name: Menu command string
+      default: MENU
+      selector:
+        text:
+    info_command:
+      name: Info command string
+      default: INFO
+      selector:
+        text:
+    guide_command:
+      name: Guide / EPG command string
+      default: GUIDE
+      selector:
+        text:
+    page_up_command:
+      name: Page Up command string
+      default: PAGE_UP
+      selector:
+        text:
+    page_down_command:
+      name: Page Down command string
+      default: PAGE_DOWN
+      selector:
+        text:
+
+    channel_up_command:
+      name: Channel Up command string
+      default: CHANNEL_UP
+      selector:
+        text:
+    channel_down_command:
+      name: Channel Down command string
+      default: CHANNEL_DOWN
+      selector:
+        text:
+
+    red_command:
+      name: Red color-button command string
+      description: Android TV uses PROG_RED / PROG_GREEN / PROG_YELLOW / PROG_BLUE.
+      default: PROG_RED
+      selector:
+        text:
+    green_command:
+      name: Green color-button command string
+      default: PROG_GREEN
+      selector:
+        text:
+    yellow_command:
+      name: Yellow color-button command string
+      default: PROG_YELLOW
+      selector:
+        text:
+    blue_command:
+      name: Blue color-button command string
+      default: PROG_BLUE
+      selector:
+        text:
+
+    digit_command_template:
+      name: Digit command template (0-9)
+      description: >
+        Template applied to digits 0-9. The literal substring '{n}' is replaced
+        with the digit. Examples — Android TV / LG: '{n}' (sends '0'..'9');
+        some integrations: 'KEYCODE_{n}' or 'NUMPAD_{n}'.
+      default: "{n}"
+      selector:
+        text:
+    star_command:
+      name: Star (*) command string
+      default: "*"
+      selector:
+        text:
+    hash_command:
+      name: Hash (#) command string
+      default: "#"
+      selector:
+        text:
+
+    # ---------- Activity row ----------
+    on_room_off:
+      name: Room Off
+      default: []
+      selector:
+        action: {}
+    on_watch:
+      name: Watch
+      default: []
+      selector:
+        action: {}
+    on_listen:
+      name: Listen
+      default: []
+      selector:
+        action: {}
+    on_list:
+      name: List
+      default: []
+      selector:
+        action: {}
+
+    # ---------- Custom buttons ----------
+    on_i:
+      name: I (custom)
+      default: []
+      selector:
+        action: {}
+    on_ii:
+      name: II (custom)
+      default: []
+      selector:
+        action: {}
+    on_iii:
+      name: III (custom)
+      default: []
+      selector:
+        action: {}
+
+    # ---------- Nav extras ----------
+    on_prev:
+      name: Prev
+      default: []
+      selector:
+        action: {}
+
+    # ---------- Transport extras ----------
+    on_dvr:
+      name: DVR
+      default: []
+      selector:
+        action: {}
+
+mode: parallel
+max: 10
+
+trigger:
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
+      command: remote_button_short_press
+
+variables:
+  volume_target: !input volume_target
+  digit_template: !input digit_command_template
+  button: >-
+    {% set d = trigger.event.data %}
+    {%- if d.args is mapping and 'button' in d.args -%}
+      {{ d.args.button }}
+    {%- elif d.params is mapping and 'button' in d.params -%}
+      {{ d.params.button }}
+    {%- endif -%}
+
+action:
+  - choose:
+      # ===== Direct transport mappings (remote.send_command) =====
+      - conditions: "{{ button == 'play' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input play_command
+      - conditions: "{{ button == 'pause' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input pause_command
+      - conditions: "{{ button == 'stop' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input stop_command
+      - conditions: "{{ button == 'skip_forward' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input skip_forward_command
+      - conditions: "{{ button == 'skip_back' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input skip_back_command
+      - conditions: "{{ button == 'rewind' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input rewind_command
+      - conditions: "{{ button == 'fast_forward' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input fast_forward_command
+      - conditions: "{{ button == 'record' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input record_command
+
+      # ===== Direct volume mappings =====
+      - conditions: "{{ button == 'vol_up' }}"
+        sequence:
+          - action: media_player.volume_up
+            target:
+              entity_id: "{{ volume_target }}"
+      - conditions: "{{ button == 'vol_down' }}"
+        sequence:
+          - action: media_player.volume_down
+            target:
+              entity_id: "{{ volume_target }}"
+      - conditions: "{{ button == 'mute' }}"
+        sequence:
+          - action: media_player.volume_mute
+            target:
+              entity_id: "{{ volume_target }}"
+            data:
+              is_volume_muted: "{{ not is_state_attr(volume_target, 'is_volume_muted', true) }}"
+
+      # ===== Custom-action mappings =====
+      - conditions: "{{ button == 'room_off' }}"
+        sequence: !input on_room_off
+      - conditions: "{{ button == 'watch' }}"
+        sequence: !input on_watch
+      - conditions: "{{ button == 'control4' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input home_command
+      - conditions: "{{ button == 'listen' }}"
+        sequence: !input on_listen
+      - conditions: "{{ button == 'list' }}"
+        sequence: !input on_list
+
+      - conditions: "{{ button == 'i' }}"
+        sequence: !input on_i
+      - conditions: "{{ button == 'ii' }}"
+        sequence: !input on_ii
+      - conditions: "{{ button == 'iii' }}"
+        sequence: !input on_iii
+
+      - conditions: "{{ button == 'guide' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input guide_command
+      - conditions: "{{ button == 'page_up' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input page_up_command
+      - conditions: "{{ button == 'page_down' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input page_down_command
+      - conditions: "{{ button == 'prev' }}"
+        sequence: !input on_prev
+
+      # ===== Direct D-pad / Select mappings (remote.send_command) =====
+      - conditions: "{{ button == 'up' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input up_command
+      - conditions: "{{ button == 'down' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input down_command
+      - conditions: "{{ button == 'left' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input left_command
+      - conditions: "{{ button == 'right' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input right_command
+      - conditions: "{{ button == 'select' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input select_command
+
+      - conditions: "{{ button == 'ch_up' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input channel_up_command
+      - conditions: "{{ button == 'ch_down' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input channel_down_command
+
+      - conditions: "{{ button == 'info' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input info_command
+      - conditions: "{{ button == 'menu' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input menu_command
+      - conditions: "{{ button == 'cancel' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input cancel_command
+
+      - conditions: "{{ button == 'dvr' }}"
+        sequence: !input on_dvr
+
+      - conditions: "{{ button == 'red' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input red_command
+      - conditions: "{{ button == 'green' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input green_command
+      - conditions: "{{ button == 'yellow' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input yellow_command
+      - conditions: "{{ button == 'blue' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input blue_command
+
+      # ===== Number pad (remote.send_command) =====
+      - conditions: "{{ button.startswith('digit_') }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: "{{ digit_template | replace('{n}', button[6:]) }}"
+      - conditions: "{{ button == 'star' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input star_command
+      - conditions: "{{ button == 'hash' }}"
+        sequence:
+          - action: remote.send_command
+            target:
+              entity_id: !input remote_target
+            data:
+              command: !input hash_command
