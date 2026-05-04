@@ -14,10 +14,11 @@ blueprint:
                                                      a user-selectable remote entity
 
     Every command sent via remote.send_command has its command string as a
-    user-editable input — spellings differ by integration: Android TV uses
-    DPAD_UP / MEDIA_PLAY, Apple TV and Roku use up / play, LG webOS uses UP /
-    PLAY, etc. Defaults are Android TV. Digits 0-9 share one template input
-    where {n} is replaced with the digit (default '{n}' → '0'..'9').
+    user-editable input — spellings differ by integration: Roku uses Up /
+    Play / Rev / Fwd, Android TV uses DPAD_UP / MEDIA_PLAY, LG webOS uses
+    UP / PLAY, etc. Defaults are Roku ECP key names. Digits 0-9 share one
+    template input where {n} is replaced with the digit (Roku default
+    'Lit_{n}' → 'Lit_0'..'Lit_9').
 
     All remaining buttons (Room Off, Watch, Listen, List, I/II/III, Prev, DVR)
     expose an optional Action input that is invoked on press.
@@ -58,145 +59,150 @@ blueprint:
 
     up_command:
       name: Up command string
-      description: Command sent for D-pad Up. Examples — Android TV:DPAD_UP, Apple TV/Roku:up, LG:UP.
-      default: DPAD_UP
+      description: Command sent for D-pad Up. Examples — Roku:Up, Android TV:DPAD_UP, LG:UP.
+      default: Up
       selector:
         text:
     down_command:
       name: Down command string
-      default: DPAD_DOWN
+      default: Down
       selector:
         text:
     left_command:
       name: Left command string
-      default: DPAD_LEFT
+      default: Left
       selector:
         text:
     right_command:
       name: Right command string
-      default: DPAD_RIGHT
+      default: Right
       selector:
         text:
     select_command:
       name: Select / OK command string
-      description: Examples — Android TV:DPAD_CENTER, Apple TV/Roku:select, LG:ENTER.
-      default: DPAD_CENTER
+      description: Examples — Roku:Select, Android TV:DPAD_CENTER, LG:ENTER.
+      default: Select
       selector:
         text:
 
     play_command:
       name: Play command string
-      description: Examples — Android TV:MEDIA_PLAY, Apple TV/Roku:play, LG:PLAY.
-      default: MEDIA_PLAY
+      description: Examples — Roku:Play, Android TV:MEDIA_PLAY, LG:PLAY.
+      default: Play
       selector:
         text:
     pause_command:
       name: Pause command string
-      default: MEDIA_PAUSE
+      description: Roku has no separate Pause — Play toggles play/pause, so the default is "Play".
+      default: Play
       selector:
         text:
     stop_command:
       name: Stop command string
-      default: MEDIA_STOP
+      default: Stop
       selector:
         text:
     skip_forward_command:
       name: Skip Forward command string
-      description: Next track / chapter forward.
-      default: MEDIA_NEXT
+      description: Next track / chapter forward. Roku has no skip-forward key; override per-platform.
+      default: SkipForward
       selector:
         text:
     skip_back_command:
       name: Skip Back command string
-      description: Previous track / chapter back.
-      default: MEDIA_PREVIOUS
+      description: Previous track / chapter back. Roku has no skip-back key; override per-platform.
+      default: SkipBack
       selector:
         text:
     rewind_command:
       name: Rewind command string
-      default: MEDIA_REWIND
+      default: Rev
       selector:
         text:
     fast_forward_command:
       name: Fast Forward command string
-      default: MEDIA_FAST_FORWARD
+      default: Fwd
       selector:
         text:
     record_command:
       name: Record command string
-      default: MEDIA_RECORD
+      default: Record
       selector:
         text:
 
     cancel_command:
       name: Cancel / Back command string
-      description: Examples — Android TV / LG:BACK, Roku:back, Samsung:KEY_RETURN, Apple TV:menu.
-      default: BACK
+      description: Examples — Roku:Back, Android TV / LG:BACK, Samsung:KEY_RETURN, Apple TV:menu.
+      default: Back
       selector:
         text:
 
     home_command:
       name: Control4 / Home command string
-      description: Examples — Android TV:HOME, Roku/Apple TV:home, LG:HOME.
-      default: HOME
+      description: Examples — Roku/Apple TV:Home, Android TV:HOME, LG:HOME.
+      default: Home
       selector:
         text:
     menu_command:
       name: Menu command string
-      default: MENU
+      description: Roku has no separate Menu key; override per-platform.
+      default: Menu
       selector:
         text:
     info_command:
       name: Info command string
-      default: INFO
+      default: Info
       selector:
         text:
     guide_command:
       name: Guide / EPG command string
-      default: GUIDE
+      description: Roku has no Guide key; override per-platform.
+      default: Guide
       selector:
         text:
     page_up_command:
       name: Page Up command string
-      default: PAGE_UP
+      description: Roku has no Page Up key; override per-platform.
+      default: PageUp
       selector:
         text:
     page_down_command:
       name: Page Down command string
-      default: PAGE_DOWN
+      description: Roku has no Page Down key; override per-platform.
+      default: PageDown
       selector:
         text:
 
     channel_up_command:
       name: Channel Up command string
-      default: CHANNEL_UP
+      default: ChannelUp
       selector:
         text:
     channel_down_command:
       name: Channel Down command string
-      default: CHANNEL_DOWN
+      default: ChannelDown
       selector:
         text:
 
     red_command:
       name: Red color-button command string
-      description: Android TV uses PROG_RED / PROG_GREEN / PROG_YELLOW / PROG_BLUE.
-      default: PROG_RED
+      description: Roku has no color buttons; override per-platform (Android TV uses PROG_RED / GREEN / YELLOW / BLUE).
+      default: Red
       selector:
         text:
     green_command:
       name: Green color-button command string
-      default: PROG_GREEN
+      default: Green
       selector:
         text:
     yellow_command:
       name: Yellow color-button command string
-      default: PROG_YELLOW
+      default: Yellow
       selector:
         text:
     blue_command:
       name: Blue color-button command string
-      default: PROG_BLUE
+      default: Blue
       selector:
         text:
 
@@ -204,19 +210,22 @@ blueprint:
       name: Digit command template (0-9)
       description: >
         Template applied to digits 0-9. The literal substring '{n}' is replaced
-        with the digit. Examples — Android TV / LG: '{n}' (sends '0'..'9');
-        some integrations: 'KEYCODE_{n}' or 'NUMPAD_{n}'.
-      default: "{n}"
+        with the digit. Examples — Roku: 'Lit_{n}' (sends 'Lit_0'..'Lit_9');
+        Android TV / LG: '{n}' (sends '0'..'9'); other integrations:
+        'KEYCODE_{n}' or 'NUMPAD_{n}'.
+      default: "Lit_{n}"
       selector:
         text:
     star_command:
       name: Star (*) command string
-      default: "*"
+      description: Roku does not natively pass '*'; override per-platform.
+      default: "Lit_*"
       selector:
         text:
     hash_command:
       name: Hash (#) command string
-      default: "#"
+      description: Roku does not natively pass '#'; override per-platform.
+      default: "Lit_#"
       selector:
         text:
 
