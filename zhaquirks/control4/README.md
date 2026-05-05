@@ -231,11 +231,36 @@ The Event entity names follow the physical layout:
 - Color buttons: `red` / `green` / `yellow` / `blue`
 - Numeric keypad: `digit_0` … `digit_9`, `star`, `hash`
 
-**LCD screen support is not implemented.** The remote will still operate
-as a button input without a controller answering its `c4.ln.*` UI
-exchanges, but the LCD will show "Loading Room…" until it sleeps. See
-`documentation/control4-sr260-remote-protocol.md` for the screen / menu
-protocol if you want to extend the quirk.
+**LCD display message** — the quirk exposes a writable string attribute
+(cluster `0xFC47`, attribute `0x0000` = `display_message`) on EP 1.
+Writing to this attribute pushes the string to the SR260's LCD via
+`c4.ln.dm`; writing an empty string clears the LCD via `c4.ln.le`. The
+icon byte (attribute `0x0001` = `display_icon`, default `0x5A`) is
+configurable by writing it before the message.
+
+From a Home Assistant automation:
+
+```yaml
+service: zha.set_zigbee_cluster_attribute
+data:
+  ieee: "00:0f:ff:XX:XX:XX:XX:XX"   # SR260 IEEE
+  endpoint_id: 1
+  cluster_id: 0xFC47
+  cluster_type: in
+  attribute: 0                       # display_message
+  value: "Doorbell ringing"
+```
+
+Wire a `text:` helper to this service via an automation if you want a
+text input on a dashboard. The remote does not echo the displayed
+message back, so the cached value is the only ground truth available
+for read-back.
+
+Full menu / list rendering (`c4.ln.sl` / `c4.ln.gi` paged item lists)
+is not implemented — the remote will still show "Loading Room…" on
+cold boot until it sleeps. See
+`documentation/control4-sr260-remote-protocol.md` for the rest of the
+screen protocol if you want to extend the quirk.
 
 ### C4-Z2IO-ZP IO Module
 
@@ -295,6 +320,7 @@ control4/
 ├── c4_z2io_zp.py                Z2IO-ZP state machine & protocol handler
 ├── c4_basic_cluster.py          Model/manufacturer resolution for C4 devices
 ├── c4_button_cluster.py         Button event parsing & state sync
+├── c4_display_cluster.py        SR260 LCD-message cluster (0xFC47)
 ├── c4_led_cluster.py            LED color/mode control (cluster 0xFC43)
 ├── c4_helpers.py                Constants, frame builders, shared utilities
 ├── c4_hooks.py                  Monkey-patches for quirk discovery & routing

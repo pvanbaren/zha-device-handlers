@@ -1,7 +1,8 @@
 """ZHA quirk for the Control4 C4-SR260 IR/Zigbee Remote (50 buttons).
 
 EP layout:
-  1            — ZHA Remote Control + PowerConfiguration (battery)
+  1            — ZHA Remote Control + PowerConfiguration (battery) +
+                 C4SR260DisplayCluster (writable LCD message)
   2            — virtual, C4ConfigCluster
   196          — virtual, C4ConfigCluster
   197          — C4 button, C4RemoteButtonCluster (routing hub only)
@@ -68,6 +69,7 @@ from c4_button_cluster import (
     C4RemoteButtonCluster,
     _SR260_BUTTON_CLUSTERS,
 )
+from c4_display_cluster import C4SR260DisplayCluster
 from c4_hooks import _C4_MODEL_QUIRK_MAP
 
 _LOGGER = logging.getLogger(__name__)
@@ -137,6 +139,7 @@ class Control4SR260Remote(CustomDevice):
                     Identify.cluster_id,
                     PowerConfiguration.cluster_id,
                     C4DimmerManufCluster,
+                    C4SR260DisplayCluster,
                 ],
                 OUTPUT_CLUSTERS: [C4_MANUF_CLUSTER],
             },

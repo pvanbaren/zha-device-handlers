@@ -320,6 +320,83 @@ def _build_c4_frame(seq_num, ascii_cmd: str) -> bytes:
     return (ascii_cmd + "\r\n").encode("ascii")
 
 
+# ---------------------------------------------------------------------------
+# SR260 LCD: display-message helpers (c4.ln.dm / c4.ln.le)
+# ---------------------------------------------------------------------------
+#
+# The SR260 remote shows a single-line message on its LCD when the controller
+# sends:
+#     0i<seq> c4.ln.dm <icon:u8> "<message>"\r\n
+# and clears it (closes the splash) with:
+#     0i<seq> c4.ln.le\r\n
+#
+# Observed in the init capture as `c4.ln.dm 5a "Loading Room..."`.  The icon
+# byte is part of the same glyph table used for list-item label prefixes; 0x5a
+# is the controller's default for transient splashes.
+#
+# Both verbs are sent on profile C4_PROFILE_BUTTON (0xC25C), cluster 0x0001,
+# EP 1→1 — the same transport the dimmer / fan / LED quirks use for their
+# 0s commands.  The remote does not return an Init response, so requests are
+# fire-and-forget (expect_reply=False).
+
+# Default icon byte for c4.ln.dm splashes.  0x5a is what the official C4
+# controller used in the captured init sequence.
+C4_DISPLAY_DEFAULT_ICON = 0x5A
+
+
+async def _c4_send_display_message(
+    device, message: str, icon: int = C4_DISPLAY_DEFAULT_ICON,
+) -> None:
+    """Push a one-line message to a Control4 device's LCD.
+
+    Sends `0i<seq> c4.ln.dm <icon> "<message>"\r\n` on the C4 button profile.
+    Embedded `"` is stripped and `\r` / `\n` are replaced with spaces so the
+    framing isn't broken.  Empty `message` is rejected — call
+    `_c4_send_clear_display` to dismiss an existing splash.
+    """
+    if not isinstance(message, str) or not message:
+        raise ValueError("c4.ln.dm: message must be a non-empty string")
+
+    # The frame is line-terminated with \r\n and quote-delimited, so any of
+    # those three characters in the body would corrupt parsing.
+    sanitised = (
+        message.replace("\r", " ").replace("\n", " ").replace('"', "")
+    )
+
+    seq = next_c4_seq(device)
+    cmd = f'0i{seq:04x} c4.ln.dm {icon:02x} "{sanitised}"'
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.debug(
+        "C4 display: send dm icon=0x%02x msg=%r seq=0x%04x", icon, sanitised, seq,
+    )
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
+async def _c4_send_clear_display(device) -> None:
+    """Dismiss an active LCD splash / list view via `0i<seq> c4.ln.le\r\n`."""
+    seq = next_c4_seq(device)
+    cmd = f"0i{seq:04x} c4.ln.le"
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.debug("C4 display: send le (clear) seq=0x%04x", seq)
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
 async def _c4_send_controller_identity(device, source="unknown", zcl_seq=None):
     """Send ZCL Read Attributes Response for attrs 0x0008/0x0009/0x000A on EP 2.
 
