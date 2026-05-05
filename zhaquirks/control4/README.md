@@ -351,6 +351,14 @@ Listen for the selection in an automation:
 `close_list` (command id `1`, no args) dismisses the active menu
 without waiting for a user choice.
 
+For the common case of "show a menu and run a different action depending
+on which item the user picks", import the
+[`c4_sr260_menu_dispatcher.yaml`](blueprints/c4_sr260_menu_dispatcher.yaml)
+blueprint. It exposes up to 8 paired item/action slots and a
+user-supplied "show trigger", and handles both the show side
+(`show_list`) and the dispatch side (`menu_select` event) in one
+automation.
+
 ### C4-Z2IO-ZP IO Module
 
 A versatile IO module with 2 relay outputs and 5 contact inputs, commonly used
@@ -415,6 +423,9 @@ control4/
 ├── c4_hooks.py                  Monkey-patches for quirk discovery & routing
 ├── ha-scripts/
 │   └── control4_led_scripts.yaml
+├── blueprints/                  HA automation blueprints
+│   ├── c4_sr260_media_player.yaml      SR260 → media-player + remote
+│   └── c4_sr260_menu_dispatcher.yaml   Show a menu, dispatch by selection
 └── documentation/               Protocol documentation (from packet captures)
 ```
 

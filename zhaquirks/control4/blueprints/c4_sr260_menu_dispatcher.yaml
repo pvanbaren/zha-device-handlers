@@ -1,0 +1,255 @@
+blueprint:
+  name: Control4 SR260 → Menu Dispatcher
+  description: >
+    Show a menu on the SR260's LCD when triggered, then run the action you
+    configure for whichever item the user selects.
+
+    How it works:
+      1. When your "show trigger" fires (or you run this automation
+         manually), it pushes a paged menu to the SR260's LCD via the
+         show_list cluster command.
+      2. The automation then waits up to `selection_timeout` for the
+         user to navigate the menu and press Select.
+      3. The SR260 quirk fires a `menu_select` zha_event with the chosen
+         item label.
+      4. The automation matches that label against the item slots you
+         filled in and runs the corresponding action.
+      5. If the user doesn't pick anything within the timeout (or
+         dismisses the menu with Cancel/Control4), no action runs.
+
+    Up to 8 items are supported.  Empty item slots are skipped both when
+    sending the menu to the remote and in the dispatch table — the order
+    on the LCD is just the filled slots in order (Item 1, Item 3, Item 5
+    becomes a 3-entry list).
+
+    Requires the C4-SR260 ZHA quirk (control4_remote.py +
+    c4_display_cluster.py) at a version that includes the `show_list`
+    cluster command on cluster 0xFC47 (decimal 64583).
+  domain: automation
+  input:
+    sr260_device:
+      name: SR260 remote
+      description: The Control4 SR260 remote that should display the menu.
+      selector:
+        device:
+          filter:
+            - integration: zha
+              manufacturer: Control4
+              model: C4-SR260
+
+    show_trigger:
+      name: Show menu when…
+      description: >
+        Trigger that should cause the menu to appear on the SR260 LCD.
+        Any HA trigger works — a button-press zha_event, a state change,
+        a webhook, time, etc.  If you want the menu to appear only when
+        you manually run the automation, leave the default in place
+        (a placeholder event that never fires) and use the "Run" button
+        in the UI or `automation.trigger` from another automation.
+      default:
+        - platform: event
+          event_type: c4_sr260_menu_dispatcher_manual_only
+      selector:
+        trigger:
+
+    menu_title:
+      name: Menu title
+      description: Header line shown above the list on the SR260 LCD.
+      default: ""
+      selector:
+        text:
+
+    initial_index:
+      name: Initial selected index
+      description: >
+        Which item is highlighted when the menu opens (0 = first non-empty
+        item, 1 = second, …).
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 7
+          mode: box
+
+    selection_timeout:
+      name: Selection timeout
+      description: >
+        How long to wait for the user to make a choice before giving up
+        (HH:MM:SS).
+      default: "00:02:00"
+      selector:
+        duration:
+
+    item_1:
+      name: Item 1
+      default: ""
+      selector:
+        text:
+    action_1:
+      name: Item 1 action
+      description: Runs when Item 1 is selected.
+      default: []
+      selector:
+        action: {}
+
+    item_2:
+      name: Item 2
+      default: ""
+      selector:
+        text:
+    action_2:
+      name: Item 2 action
+      default: []
+      selector:
+        action: {}
+
+    item_3:
+      name: Item 3
+      default: ""
+      selector:
+        text:
+    action_3:
+      name: Item 3 action
+      default: []
+      selector:
+        action: {}
+
+    item_4:
+      name: Item 4
+      default: ""
+      selector:
+        text:
+    action_4:
+      name: Item 4 action
+      default: []
+      selector:
+        action: {}
+
+    item_5:
+      name: Item 5
+      default: ""
+      selector:
+        text:
+    action_5:
+      name: Item 5 action
+      default: []
+      selector:
+        action: {}
+
+    item_6:
+      name: Item 6
+      default: ""
+      selector:
+        text:
+    action_6:
+      name: Item 6 action
+      default: []
+      selector:
+        action: {}
+
+    item_7:
+      name: Item 7
+      default: ""
+      selector:
+        text:
+    action_7:
+      name: Item 7 action
+      default: []
+      selector:
+        action: {}
+
+    item_8:
+      name: Item 8
+      default: ""
+      selector:
+        text:
+    action_8:
+      name: Item 8 action
+      default: []
+      selector:
+        action: {}
+
+mode: queued
+max: 5
+
+# The user's show trigger is the only top-level trigger.  The
+# menu_select event is awaited inline below — that side-steps the
+# "splice an !input list into a fixed trigger list" problem entirely.
+trigger: !input show_trigger
+
+variables:
+  remote: !input sr260_device
+  menu_title: !input menu_title
+  initial_index: !input initial_index
+  item_1: !input item_1
+  item_2: !input item_2
+  item_3: !input item_3
+  item_4: !input item_4
+  item_5: !input item_5
+  item_6: !input item_6
+  item_7: !input item_7
+  item_8: !input item_8
+
+action:
+  # ----------------------------------------------------------------
+  # 1. Push the menu to the SR260 LCD.
+  # ----------------------------------------------------------------
+  - service: zha.issue_zigbee_cluster_command
+    data:
+      # IEEE comes from the device's Zigbee connection tuple — ZHA
+      # stores it as ('zigbee', '00:0f:ff:…') in `connections`.
+      ieee: >-
+        {%- for conn_type, conn_id in device_attr(remote, 'connections')
+               if conn_type == 'zigbee' -%}
+        {{ conn_id }}
+        {%- endfor -%}
+      endpoint_id: 1
+      cluster_id: 64583            # 0xFC47 — C4SR260DisplayCluster
+      cluster_type: in
+      command: 0                    # show_list
+      command_type: server
+      args:
+        - "{{ menu_title }}"
+        - >-
+          {{ [item_1, item_2, item_3, item_4,
+              item_5, item_6, item_7, item_8]
+             | select | join('|') }}
+        - "{{ initial_index | int(0) }}"
+
+  # ----------------------------------------------------------------
+  # 2. Wait for the user's menu_select event from this SR260.
+  #    On timeout (no selection within `selection_timeout`), abort
+  #    the automation cleanly so no action fires.
+  # ----------------------------------------------------------------
+  - wait_for_trigger:
+      - platform: event
+        event_type: zha_event
+        event_data:
+          device_id: !input sr260_device
+          command: menu_select
+    timeout: !input selection_timeout
+    continue_on_timeout: false
+
+  # ----------------------------------------------------------------
+  # 3. Dispatch by item label.
+  # ----------------------------------------------------------------
+  - variables:
+      selected_item: "{{ wait.trigger.event.data.args.item }}"
+
+  - choose:
+      - conditions: "{{ item_1 != '' and selected_item == item_1 }}"
+        sequence: !input action_1
+      - conditions: "{{ item_2 != '' and selected_item == item_2 }}"
+        sequence: !input action_2
+      - conditions: "{{ item_3 != '' and selected_item == item_3 }}"
+        sequence: !input action_3
+      - conditions: "{{ item_4 != '' and selected_item == item_4 }}"
+        sequence: !input action_4
+      - conditions: "{{ item_5 != '' and selected_item == item_5 }}"
+        sequence: !input action_5
+      - conditions: "{{ item_6 != '' and selected_item == item_6 }}"
+        sequence: !input action_6
+      - conditions: "{{ item_7 != '' and selected_item == item_7 }}"
+        sequence: !input action_7
+      - conditions: "{{ item_8 != '' and selected_item == item_8 }}"
+        sequence: !input action_8
