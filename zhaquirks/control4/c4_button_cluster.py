@@ -35,9 +35,12 @@ from zhaquirks.const import (
     QUADRUPLE_PRESS,
 )
 
+import asyncio
+
 import c4_helpers as C4
 from c4_helpers import (
     C4_BUTTON_CLUSTER_ID,
+    C4_DISPLAY_CLUSTER_ID,
     DIMMER_BUTTON_MAP,
     DIMMER_EVENT_MAP,
     KC120277_BUTTON_EP_MAP,
@@ -45,6 +48,8 @@ from c4_helpers import (
     OUTLET_EP_MAP,
     SR260_BUTTON_EP_MAP,
     SR260_BUTTON_MAP,
+    _c4_send_clear_display,
+    _c4_send_list_items_response,
     _sync_ep1_level,
     _sync_ep1_onoff,
 )
@@ -614,9 +619,107 @@ class C4RemoteButtonCluster(C4ButtonCluster):
     def _sync_cc_event(self, button_id, click_count):
         pass
 
+    # Button id of the SR260 "Select / OK" key (matches SR260_BUTTON_MAP).
+    _SELECT_BUTTON_ID_HEX = "10"
+
+    def _process_raw(self, hdr, args):
+        """Intercept SR260 LCD `c4.ln.gi` page requests, then defer to base.
+
+        The remote sends `0i<seq> c4.ln.gi <list_id> <offset> <count> 00`
+        when it needs item labels for the active menu.  We answer it with
+        a `0r<seq> 000 "<icon><item0>" ...\r\n` response built from the
+        cached items on the display cluster (EP 1, cluster
+        C4_DISPLAY_CLUSTER_ID).  Everything else falls through to the
+        base class's `sa` / "raw frame" dispatch.
+        """
+        raw_bytes = None
+        if isinstance(args, (bytes, bytearray)):
+            raw_bytes = bytes(args)
+        elif args and isinstance(args, (list, tuple)):
+            if isinstance(args[0], (bytes, bytearray)):
+                raw_bytes = bytes(args[0])
+            elif isinstance(args[0], int):
+                raw_bytes = bytes(args)
+            elif isinstance(args[0], (list, tuple)):
+                raw_bytes = bytes(args[0])
+
+        if raw_bytes is not None:
+            text = raw_bytes.decode("ascii", errors="replace").strip()
+            cmd = text.split()
+            if (
+                len(cmd) >= 5
+                and cmd[0].startswith("0i")
+                and cmd[1] == "c4.ln.gi"
+            ):
+                try:
+                    seq = cmd[0][2:]
+                    list_id = int(cmd[2], 16)
+                    offset = int(cmd[3], 16)
+                    count = int(cmd[4], 16)
+                except ValueError:
+                    pass
+                else:
+                    _LOGGER.debug(
+                        "C4 SR260: gi request list=0x%04X offset=%d count=%d "
+                        "seq=%s",
+                        list_id, offset, count, seq,
+                    )
+                    asyncio.ensure_future(
+                        self._answer_gi_request(list_id, offset, count, seq)
+                    )
+                    return
+
+        super()._process_raw(hdr, args)
+
+    async def _answer_gi_request(
+        self, list_id: int, offset: int, count: int, seq: str,
+    ) -> None:
+        """Reply to a `c4.ln.gi` request with the cached items, if any."""
+        display = self._get_display_cluster()
+        if display is None:
+            _LOGGER.debug(
+                "C4 SR260: gi for list 0x%04X but no display cluster — ignoring",
+                list_id,
+            )
+            return
+
+        menu = getattr(display, "_active_menu", None)
+        if menu is None or menu.get("list_id") != list_id:
+            _LOGGER.debug(
+                "C4 SR260: gi for list 0x%04X but active menu is %r — "
+                "ignoring", list_id, menu,
+            )
+            return
+
+        items_all = list(menu.get("items") or [])
+        slice_end = offset + count if count else len(items_all)
+        items = items_all[offset:slice_end]
+        try:
+            await _c4_send_list_items_response(
+                self.endpoint.device, seq, items,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "C4 SR260: gi response send failed", exc_info=True,
+            )
+
+    def _get_display_cluster(self):
+        ep1 = self.endpoint.device.endpoints.get(1)
+        if ep1 is None:
+            return None
+        return ep1.in_clusters.get(C4_DISPLAY_CLUSTER_ID)
+
     def _handle_state_announcement(self, namespace, data):
         if namespace == "c4.zr.bb" and data:
-            self._fire_button_event(data[0], SHORT_PRESS)
+            button_hex = data[0]
+            # Detect "Select pressed while a list is on screen": fire a
+            # menu_select event with the cached item, then auto-clear.
+            if button_hex.lower() == self._SELECT_BUTTON_ID_HEX:
+                list_id = self._parse_hex(data, 1)
+                sel_idx = self._parse_hex(data, 2)
+                if list_id:
+                    self._fire_menu_select(list_id, sel_idx)
+            self._fire_button_event(button_hex, SHORT_PRESS)
         elif namespace == "c4.zr.be" and data:
             self._fire_button_event(data[0], SHORT_RELEASE)
         elif namespace == "c4.zr.mot":
@@ -633,6 +736,60 @@ class C4RemoteButtonCluster(C4ButtonCluster):
         else:
             _LOGGER.info(
                 "C4 SR260: unhandled namespace %s data=%s", namespace, data
+            )
+
+    @staticmethod
+    def _parse_hex(data, idx: int) -> int:
+        if len(data) <= idx:
+            return 0
+        try:
+            return int(data[idx], 16)
+        except (TypeError, ValueError):
+            return 0
+
+    def _fire_menu_select(self, list_id: int, sel_idx: int) -> None:
+        """Fire `menu_select` zha_event and auto-clear the menu."""
+        display = self._get_display_cluster()
+        if display is None:
+            return
+        menu = getattr(display, "_active_menu", None)
+        if menu is None or menu.get("list_id") != list_id:
+            # Stale / unknown list — surface the indices but no item label.
+            item = None
+            title = ""
+        else:
+            items = menu.get("items") or []
+            item = items[sel_idx] if 0 <= sel_idx < len(items) else None
+            title = menu.get("title") or ""
+
+        self.listener_event(
+            "zha_send_event",
+            "menu_select",
+            {
+                "list_id": list_id,
+                "selected_index": sel_idx,
+                "item": item,
+                "title": title,
+                ENDPOINT_ID: self.endpoint.endpoint_id,
+            },
+        )
+        _LOGGER.info(
+            "C4 SR260: menu_select list=0x%04X idx=%d item=%r",
+            list_id, sel_idx, item,
+        )
+
+        # Clear cached state and dismiss the LCD list so behaviour matches
+        # the official Control4 controller (which sends c4.ln.le on Select).
+        if display is not None:
+            display._active_menu = None
+        asyncio.ensure_future(self._clear_lcd_after_select())
+
+    async def _clear_lcd_after_select(self) -> None:
+        try:
+            await _c4_send_clear_display(self.endpoint.device)
+        except Exception:
+            _LOGGER.debug(
+                "C4 SR260: post-select c4.ln.le send failed", exc_info=True,
             )
 
     def _fire_button_event(self, button_hex: str, action: str) -> None:

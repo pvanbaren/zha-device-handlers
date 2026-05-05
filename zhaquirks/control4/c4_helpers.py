@@ -61,6 +61,7 @@ C4_MANUF_CLUSTER    = 0xFFFF
 C4_CLUSTER_ID       = 0x0001   # C4 serial-over-ZigBee cluster (wire ID)
 C4_CONFIG_CLUSTER_ID = 0xFC41  # ZHA-side virtual cluster for C4 config (avoids PowerConfiguration clash)
 C4_BUTTON_CLUSTER_ID = 0xFC42  # ZHA-side virtual cluster for button events
+C4_DISPLAY_CLUSTER_ID = 0xFC47  # ZHA-side virtual cluster for SR260 LCD message / menu
 
 # ---------------------------------------------------------------------------
 # Transition times and defaults (from Rev E provisioning capture)
@@ -387,6 +388,101 @@ async def _c4_send_clear_display(device) -> None:
     data = _build_c4_frame(seq, cmd)
 
     _LOGGER.debug("C4 display: send le (clear) seq=0x%04x", seq)
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
+async def _c4_send_list_header(
+    device, list_id: int, count: int, sel_idx: int, title: str,
+) -> None:
+    """Send `0i<seq> c4.ln.sl <list_id> <count> <sel_idx> "<title>"\r\n`.
+
+    Establishes a menu / list on the SR260's LCD.  The remote will respond
+    with one or more `c4.ln.gi` page requests asking for the actual item
+    labels, which the controller answers with `_c4_send_list_items_response`.
+
+    All three integer args are 16-bit (sent as 4 hex digits).  `title` is
+    sanitised the same way `_c4_send_display_message` sanitises its message
+    so the framing stays parseable.
+    """
+    if not 0 <= list_id <= 0xFFFF:
+        raise ValueError(f"list_id out of range: {list_id}")
+    if not 0 <= count <= 0xFFFF:
+        raise ValueError(f"count out of range: {count}")
+    if not 0 <= sel_idx <= 0xFFFF:
+        raise ValueError(f"sel_idx out of range: {sel_idx}")
+
+    sanitised = (
+        (title or "").replace("\r", " ").replace("\n", " ").replace('"', "")
+    )
+
+    seq = next_c4_seq(device)
+    cmd = (
+        f'0i{seq:04x} c4.ln.sl {list_id:04x} {count:04x} {sel_idx:04x} '
+        f'"{sanitised}"'
+    )
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.debug(
+        "C4 display: send sl id=0x%04x count=%d sel=%d title=%r seq=0x%04x",
+        list_id, count, sel_idx, sanitised, seq,
+    )
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
+async def _c4_send_list_items_response(
+    device, request_seq: str, items, icon: int = 0x01,
+) -> None:
+    """Reply to a `c4.ln.gi` request with the requested item labels.
+
+    The reply form (from captures) is:
+        0r<seq> 000 "<icon><item0>" "<icon><item1>" ...\r\n
+    where `<seq>` mirrors the seq from the request so the remote can
+    correlate, and `<icon>` is a 1-byte glyph code prefixed to each label
+    (default `0x01`, the "media tile" icon).
+
+    `items` is an iterable of strings.  Embedded `"` is stripped so the
+    quoting stays well-formed; `\r` / `\n` are replaced with spaces so the
+    line terminator isn't broken.
+    """
+    icon_byte = icon & 0xFF
+    if icon_byte > 0x7F:
+        # _build_c4_frame uses ASCII (7-bit); high-bit icons would raise.
+        # Fall back to 0x01 with a warning so the call still succeeds.
+        _LOGGER.warning(
+            "C4 display: icon 0x%02X is high-bit; using 0x01 instead "
+            "(ASCII transport cannot carry it)", icon_byte,
+        )
+        icon_byte = 0x01
+
+    icon_char = chr(icon_byte)
+    parts: list[str] = []
+    for raw in items:
+        s = str(raw if raw is not None else "")
+        s = s.replace("\r", " ").replace("\n", " ").replace('"', "")
+        parts.append(f'"{icon_char}{s}"')
+
+    body = " ".join(parts)
+    cmd = f"0r{request_seq} 000 {body}".rstrip()
+    data = _build_c4_frame(0, cmd)
+
+    _LOGGER.debug(
+        "C4 display: send gi response seq=%s items=%d icon=0x%02X",
+        request_seq, len(parts), icon_byte,
+    )
     await device.request(
         profile=C4_PROFILE_BUTTON,
         cluster=C4_CLUSTER_ID,

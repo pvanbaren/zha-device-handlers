@@ -297,11 +297,59 @@ input_text:
 The remote does not echo the displayed message back, so the cached
 value is the only ground truth available for read-back.
 
-Full menu / list rendering (`c4.ln.sl` / `c4.ln.gi` paged item lists)
-is not implemented — the remote will still show "Loading Room…" on
-cold boot until it sleeps. See
-`documentation/control4-sr260-remote-protocol.md` for the rest of the
-screen protocol if you want to extend the quirk.
+**LCD menu / list selection** — the same cluster also exposes two
+ZHA cluster commands that drive the SR260's full menu protocol:
+
+| Command id | Name | Args |
+|---|---|---|
+| `0` | `show_list` | `title` (string), `items` (`|`-separated string), `selected_index` (uint16) |
+| `1` | `close_list` | (none) |
+
+`show_list` pushes a paged menu to the LCD: the controller sends
+`c4.ln.sl <list_id> <count> <sel> "<title>"`, the remote pages through
+the items by sending `c4.ln.gi` requests, and the quirk answers each
+page from the cached item list. When the user navigates with the d-pad
+and presses **Select**, the quirk fires a `zha_event` of type
+`menu_select` carrying the chosen item, then auto-dismisses the menu
+with `c4.ln.le`. Pressing any list-dismissing key (Cancel, Control4)
+also clears the menu.
+
+Call `show_list` from a HA service:
+
+```yaml
+service: zha.issue_zigbee_cluster_command
+data:
+  ieee: "00:0f:ff:XX:XX:XX:XX:XX"
+  endpoint_id: 1
+  cluster_id: 64583                  # 0xFC47
+  cluster_type: in
+  command: 0                          # show_list
+  command_type: server
+  args: ["What now?", "Watch|Listen|Settings", 0]
+```
+
+Listen for the selection in an automation:
+
+```yaml
+- alias: SR260 menu → handle selection
+  trigger:
+    - platform: event
+      event_type: zha_event
+      event_data:
+        device_ieee: "00:0f:ff:XX:XX:XX:XX:XX"
+        command: menu_select
+  action:
+    - service: system_log.write
+      data:
+        message: >
+          SR260 menu_select:
+          item={{ trigger.event.data.args.item }},
+          index={{ trigger.event.data.args.selected_index }},
+          title={{ trigger.event.data.args.title }}
+```
+
+`close_list` (command id `1`, no args) dismisses the active menu
+without waiting for a user choice.
 
 ### C4-Z2IO-ZP IO Module
 

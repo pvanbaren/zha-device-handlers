@@ -38,19 +38,21 @@ from zigpy.quirks import CustomCluster
 from zigpy.zcl import foundation
 from zigpy.zcl.foundation import (
     BaseAttributeDefs,
+    BaseCommandDefs,
     ZCLAttributeDef,
+    ZCLCommandDef,
     Status as ZCLStatus,
 )
 
 from c4_helpers import (
+    C4_DISPLAY_CLUSTER_ID,
     C4_DISPLAY_DEFAULT_ICON,
     _c4_send_clear_display,
     _c4_send_display_message,
+    _c4_send_list_header,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-C4_DISPLAY_CLUSTER_ID = 0xFC47
 
 
 class C4SR260DisplayCluster(CustomCluster):
@@ -82,6 +84,41 @@ class C4SR260DisplayCluster(CustomCluster):
             access="rw",
             is_manufacturer_specific=False,
         )
+
+    class ServerCommandDefs(BaseCommandDefs):
+        """Commands callable via `zha.issue_zigbee_cluster_command`."""
+
+        # Push a menu (list) to the SR260 LCD.  `items` is pipe-separated
+        # because the ZCL command schema doesn't easily express a list of
+        # strings; e.g. `"Watch|Listen|Settings"`.
+        show_list = ZCLCommandDef(
+            id=0x00,
+            schema={
+                "title": t.CharacterString,
+                "items": t.LongCharacterString,
+                "selected_index": t.uint16_t,
+            },
+            is_manufacturer_specific=True,
+        )
+
+        # Dismiss the active menu (sends c4.ln.le).
+        close_list = ZCLCommandDef(
+            id=0x01,
+            schema={},
+            is_manufacturer_specific=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Per-device active-menu state
+    # ------------------------------------------------------------------
+    # `_active_menu` is None when no menu is on screen; otherwise a dict:
+    #   {"list_id": int, "title": str, "items": [str, ...],
+    #    "selected_index": int}
+    # Set by show_list, read by C4RemoteButtonCluster's gi-handler when the
+    # remote pages through the items, and cleared by close_list / by a
+    # Select-on-list event.
+    _active_menu: dict | None = None
+    _next_list_id: int = 0  # rolls 1..0xFFFF, never 0 (0 means "no list")
 
     # ------------------------------------------------------------------
     # Startup — seed default + push current value to the LCD
@@ -251,3 +288,93 @@ class C4SR260DisplayCluster(CustomCluster):
                 success[key] = ""
 
         return success, failure
+
+    # ------------------------------------------------------------------
+    # show_list / close_list — menu commands (called by ZHA via service)
+    # ------------------------------------------------------------------
+
+    def _next_list_id_value(self) -> int:
+        """Return a non-zero 16-bit list id (`0` means "no list" on the wire)."""
+        nxt = (self._next_list_id + 1) & 0xFFFF
+        if nxt == 0:
+            nxt = 1
+        # Use a writable instance attribute (the class attribute is just the
+        # initial value; subsequent writes shadow it on the instance).
+        self._next_list_id = nxt
+        return nxt
+
+    async def show_list(self, title, items, selected_index):
+        """Push a menu / list to the SR260 LCD.
+
+        `items` is a pipe-separated string ("Watch|Listen|Settings") since
+        ZCL command schemas don't natively carry a list of strings.  Empty
+        entries between pipes are kept (so `"|Watch||Listen"` is a 4-entry
+        list with two blanks).
+
+        After this call the cluster owns an "active menu" and answers the
+        remote's `c4.ln.gi` page requests with the cached items.  When the
+        user moves the cursor and presses Select, `C4RemoteButtonCluster`
+        fires a `menu_select` zha_event with the chosen item and clears
+        the menu.
+
+        Calling `show_list` again replaces the previous menu.  Calling
+        `close_list` (or pressing any list-dismissing key) clears it.
+        """
+        items_list: list[str] = []
+        if items is not None:
+            items_list = [s for s in str(items).split("|")]
+        if not items_list:
+            raise ValueError("show_list: items must contain at least one entry")
+
+        try:
+            sel = int(selected_index or 0)
+        except (TypeError, ValueError):
+            sel = 0
+        if sel < 0:
+            sel = 0
+        if sel >= len(items_list):
+            sel = len(items_list) - 1
+
+        list_id = self._next_list_id_value()
+        title_str = str(title or "")
+
+        self._active_menu = {
+            "list_id": list_id,
+            "title": title_str,
+            "items": items_list,
+            "selected_index": sel,
+        }
+
+        device = self.endpoint.device
+        try:
+            await _c4_send_list_header(
+                device,
+                list_id=list_id,
+                count=len(items_list),
+                sel_idx=sel,
+                title=title_str,
+            )
+            _LOGGER.info(
+                "C4 display [%s]: show_list id=0x%04X items=%d sel=%d title=%r",
+                device.ieee, list_id, len(items_list), sel, title_str,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "C4 display: show_list send failed", exc_info=True,
+            )
+            self._active_menu = None
+            raise
+
+    async def close_list(self):
+        """Dismiss the active menu (sends `c4.ln.le`)."""
+        device = self.endpoint.device
+        had_menu = self._active_menu is not None
+        self._active_menu = None
+        try:
+            await _c4_send_clear_display(device)
+            if had_menu:
+                _LOGGER.info("C4 display [%s]: close_list", device.ieee)
+        except Exception:
+            _LOGGER.warning(
+                "C4 display: close_list send failed", exc_info=True,
+            )
