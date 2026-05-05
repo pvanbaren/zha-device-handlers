@@ -723,7 +723,18 @@ class C4RemoteButtonCluster(C4ButtonCluster):
         elif namespace == "c4.zr.be" and data:
             self._fire_button_event(data[0], SHORT_RELEASE)
         elif namespace == "c4.zr.mot":
-            _LOGGER.debug("C4 SR260: pickup / wake event")
+            # SR260 woke from sleep due to motion / pickup.  Fire a
+            # zha_event so HA automations can react (e.g. turn on a
+            # light when the remote is picked up).
+            self.listener_event(
+                "zha_send_event",
+                "motion_wake",
+                {ENDPOINT_ID: self.endpoint.endpoint_id},
+            )
+            _LOGGER.debug(
+                "C4 SR260 [%s]: motion_wake fired",
+                self.endpoint.device.ieee,
+            )
         elif namespace == "c4.zr.bl":
             _LOGGER.debug("C4 SR260: backlight event %s", data)
         elif namespace.startswith("c4.ln.") or namespace in (

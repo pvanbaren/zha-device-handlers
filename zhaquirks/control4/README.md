@@ -359,6 +359,28 @@ user-supplied "show trigger", and handles both the show side
 (`show_list`) and the dispatch side (`menu_select` event) in one
 automation.
 
+**Motion / wake event** — every time the SR260 wakes from sleep
+because the user picked it up or moved it, the quirk fires a
+`zha_event` with `command: motion_wake`. Hook an automation to it to,
+say, turn on a lamp when the remote is grabbed:
+
+```yaml
+trigger:
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: <SR260 device id>
+      command: motion_wake
+action:
+  - service: light.turn_on
+    target:
+      entity_id: light.living_room
+```
+
+`motion_wake` corresponds to the SR260's `c4.zr.mot` announce — the
+remote also sends one shortly after a cold boot / rejoin, so expect an
+event right after the device comes online.
+
 ### C4-Z2IO-ZP IO Module
 
 A versatile IO module with 2 relay outputs and 5 contact inputs, commonly used
