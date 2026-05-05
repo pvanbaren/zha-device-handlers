@@ -238,7 +238,22 @@ Writing to this attribute pushes the string to the SR260's LCD via
 icon byte (attribute `0x0001` = `display_icon`, default `0x5A`) is
 configurable by writing it before the message.
 
-From a Home Assistant automation:
+The cached value persists across HA restarts. On every HA / ZHA startup
+the quirk re-pushes the cached message to the LCD so the display always
+matches whatever was last set, even after the remote sleeps and reboots.
+On the very first start the cache is seeded with the device's model
+string (`"C4-SR260"`) as a sensible default; write the attribute once to
+override it and the new value sticks.
+
+> **Note — there is no UI text entity for this attribute.** ZHA does not
+> have a `text` platform, so a writable `CharacterString` attribute on a
+> custom cluster does *not* surface as a text input on the device card,
+> and no amount of re-pairing will produce one. To write the attribute,
+> either call `zha.set_zigbee_cluster_attribute` from an automation /
+> script (see below), or bridge an `input_text` helper to that service
+> call.
+
+Direct service call:
 
 ```yaml
 service: zha.set_zigbee_cluster_attribute
@@ -251,10 +266,36 @@ data:
   value: "Doorbell ringing"
 ```
 
-Wire a `text:` helper to this service via an automation if you want a
-text input on a dashboard. The remote does not echo the displayed
-message back, so the cached value is the only ground truth available
-for read-back.
+`input_text` helper bridge (gives you a text input on dashboards):
+
+```yaml
+# configuration.yaml
+input_text:
+  sr260_display:
+    name: SR260 LCD message
+    initial: "C4-SR260"
+    max: 64
+```
+
+```yaml
+# automations.yaml
+- alias: SR260 → push display message
+  trigger:
+    - platform: state
+      entity_id: input_text.sr260_display
+  action:
+    - service: zha.set_zigbee_cluster_attribute
+      data:
+        ieee: "00:0f:ff:XX:XX:XX:XX:XX"   # SR260 IEEE
+        endpoint_id: 1
+        cluster_id: 0xFC47
+        cluster_type: in
+        attribute: 0
+        value: "{{ states('input_text.sr260_display') }}"
+```
+
+The remote does not echo the displayed message back, so the cached
+value is the only ground truth available for read-back.
 
 Full menu / list rendering (`c4.ln.sl` / `c4.ln.gi` paged item lists)
 is not implemented — the remote will still show "Loading Room…" on

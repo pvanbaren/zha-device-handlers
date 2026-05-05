@@ -5,6 +5,11 @@ CharacterString, RW) named `display_message`.  Writing to this attribute
 sends `c4.ln.dm <icon> "<message>"` to the remote's LCD; writing an empty
 string sends `c4.ln.le` to dismiss any active splash / menu.
 
+NOTE — ZHA has no `text` platform, so this attribute does NOT surface as
+a text-input entity on the device card in HA.  No quirk-side change will
+produce one.  Users should bridge an `input_text` helper to the service
+call below via an automation if they want a dashboard text input.
+
 How to write the attribute from Home Assistant:
 
   service: zha.set_zigbee_cluster_attribute
@@ -15,8 +20,6 @@ How to write the attribute from Home Assistant:
     cluster_type: in
     attribute: 0
     value: "Hello from HA"
-
-Wire it to a `text` helper via an automation if you want a UI text input.
 
 Cluster ID 0xFC47 is in the ZHA "manufacturer-specific" range (0xFC00..0xFFFF)
 and isn't used by any other Control4 quirk in this codebase.
@@ -79,6 +82,58 @@ class C4SR260DisplayCluster(CustomCluster):
             access="rw",
             is_manufacturer_specific=False,
         )
+
+    # ------------------------------------------------------------------
+    # Startup — seed default + push current value to the LCD
+    # ------------------------------------------------------------------
+
+    async def async_initialize(self, from_cache=False):
+        """On every HA / ZHA startup, push the cached display message to the LCD.
+
+        On first start (cache empty), seed the cache with the zigpy device
+        model name (e.g. ``"C4-SR260"``) so the LCD shows a sensible label
+        out of the box.  The user can override at any time by writing
+        ``display_message`` — that override persists in ZHA's attribute
+        cache and is what gets pushed on the next start.
+
+        Failures are logged at WARNING and swallowed: the SR260 is a sleepy
+        end-device, so the very first push may race the device's first
+        wake-up. The user just sees no LCD update that one boot.
+        """
+        msg_id  = self.AttributeDefs.display_message.id
+        icon_id = self.AttributeDefs.display_icon.id
+
+        cached = self._attr_cache.get(msg_id)
+        if not isinstance(cached, str) or not cached:
+            device = self.endpoint.device
+            cached = getattr(device, "model", None) or "Remote"
+            self._update_attribute(msg_id, cached)
+            _LOGGER.info(
+                "C4 display [%s]: seeded default message %r",
+                device.ieee, cached,
+            )
+
+        icon = self._attr_cache.get(icon_id, C4_DISPLAY_DEFAULT_ICON)
+        try:
+            icon = int(icon) & 0xFF
+        except (TypeError, ValueError):
+            icon = C4_DISPLAY_DEFAULT_ICON
+
+        try:
+            await _c4_send_display_message(
+                self.endpoint.device, cached, icon=icon,
+            )
+            _LOGGER.info(
+                "C4 display [%s]: startup push %r (icon=0x%02X)",
+                self.endpoint.device.ieee, cached, icon,
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "C4 display [%s]: startup push failed — %s",
+                self.endpoint.device.ieee, e,
+            )
+
+        await super().async_initialize(from_cache=from_cache)
 
     # ------------------------------------------------------------------
     # Attribute write — translate to c4.ln.dm / c4.ln.le
