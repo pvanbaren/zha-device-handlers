@@ -99,19 +99,20 @@ blueprint:
         text:
     stop_command:
       name: Stop command string
-      default: Stop
+      description: Roku has no Stop key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     skip_forward_command:
       name: Skip Forward command string
-      description: Next track / chapter forward. Roku has no skip-forward key; override per-platform.
-      default: SkipForward
+      description: Roku has no skip-forward key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     skip_back_command:
       name: Skip Back command string
-      description: Previous track / chapter back. Roku has no skip-back key; override per-platform.
-      default: SkipBack
+      description: Roku has no skip-back key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     rewind_command:
@@ -126,7 +127,8 @@ blueprint:
         text:
     record_command:
       name: Record command string
-      default: Record
+      description: Roku has no Record key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
 
@@ -145,8 +147,8 @@ blueprint:
         text:
     menu_command:
       name: Menu command string
-      description: Roku has no separate Menu key; override per-platform.
-      default: Menu
+      description: Roku has no separate Menu key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     info_command:
@@ -156,20 +158,20 @@ blueprint:
         text:
     guide_command:
       name: Guide / EPG command string
-      description: Roku has no Guide key; override per-platform.
-      default: Guide
+      description: Roku has no Guide key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     page_up_command:
       name: Page Up command string
-      description: Roku has no Page Up key; override per-platform.
-      default: PageUp
+      description: Roku has no Page Up key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
     page_down_command:
       name: Page Down command string
-      description: Roku has no Page Down key; override per-platform.
-      default: PageDown
+      description: Roku has no Page Down key; override per-platform or leave blank to ignore.
+      default: ""
       selector:
         text:
 
@@ -186,23 +188,23 @@ blueprint:
 
     red_command:
       name: Red color-button command string
-      description: Roku has no color buttons; override per-platform (Android TV uses PROG_RED / GREEN / YELLOW / BLUE).
-      default: Red
+      description: Roku has no color buttons; override per-platform (Android TV uses PROG_RED / GREEN / YELLOW / BLUE) or leave blank to ignore.
+      default: ""
       selector:
         text:
     green_command:
       name: Green color-button command string
-      default: Green
+      default: ""
       selector:
         text:
     yellow_command:
       name: Yellow color-button command string
-      default: Yellow
+      default: ""
       selector:
         text:
     blue_command:
       name: Blue color-button command string
-      default: Blue
+      default: ""
       selector:
         text:
 
@@ -295,6 +297,38 @@ trigger:
 variables:
   volume_target: !input volume_target
   digit_template: !input digit_command_template
+  # Expose every command-string input as a Jinja variable so the choose
+  # conditions below can short-circuit on empty (unset) commands instead
+  # of firing remote.send_command with "" — which most TV / streamer
+  # integrations (Roku in particular) reject as "Invalid response".
+  up_command:           !input up_command
+  down_command:         !input down_command
+  left_command:         !input left_command
+  right_command:        !input right_command
+  select_command:       !input select_command
+  play_command:         !input play_command
+  pause_command:        !input pause_command
+  stop_command:         !input stop_command
+  skip_forward_command: !input skip_forward_command
+  skip_back_command:    !input skip_back_command
+  rewind_command:       !input rewind_command
+  fast_forward_command: !input fast_forward_command
+  record_command:       !input record_command
+  cancel_command:       !input cancel_command
+  home_command:         !input home_command
+  menu_command:         !input menu_command
+  info_command:         !input info_command
+  guide_command:        !input guide_command
+  page_up_command:      !input page_up_command
+  page_down_command:    !input page_down_command
+  channel_up_command:   !input channel_up_command
+  channel_down_command: !input channel_down_command
+  red_command:          !input red_command
+  green_command:        !input green_command
+  yellow_command:       !input yellow_command
+  blue_command:         !input blue_command
+  star_command:         !input star_command
+  hash_command:         !input hash_command
   button: >-
     {% set d = trigger.event.data %}
     {%- if d.args is mapping and 'button' in d.args -%}
@@ -306,75 +340,91 @@ variables:
 action:
   - choose:
       # ===== Direct transport mappings (remote.send_command) =====
-      - conditions: "{{ button == 'play' }}"
+      - conditions:
+          - "{{ button == 'play' }}"
+          - "{{ play_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input play_command
-      - conditions: "{{ button == 'pause' }}"
+              command: "{{ play_command }}"
+      - conditions:
+          - "{{ button == 'pause' }}"
+          - "{{ pause_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input pause_command
-      - conditions: "{{ button == 'stop' }}"
+              command: "{{ pause_command }}"
+      - conditions:
+          - "{{ button == 'stop' }}"
+          - "{{ stop_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input stop_command
-      - conditions: "{{ button == 'skip_forward' }}"
+              command: "{{ stop_command }}"
+      - conditions:
+          - "{{ button == 'skip_forward' }}"
+          - "{{ skip_forward_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input skip_forward_command
-      - conditions: "{{ button == 'skip_back' }}"
+              command: "{{ skip_forward_command }}"
+      - conditions:
+          - "{{ button == 'skip_back' }}"
+          - "{{ skip_back_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input skip_back_command
-      - conditions: "{{ button == 'rewind' }}"
+              command: "{{ skip_back_command }}"
+      - conditions:
+          - "{{ button == 'reverse' }}"
+          - "{{ rewind_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input rewind_command
-      - conditions: "{{ button == 'fast_forward' }}"
+              command: "{{ rewind_command }}"
+      - conditions:
+          - "{{ button == 'forward' }}"
+          - "{{ fast_forward_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input fast_forward_command
-      - conditions: "{{ button == 'record' }}"
+              command: "{{ fast_forward_command }}"
+      - conditions:
+          - "{{ button == 'record' }}"
+          - "{{ record_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input record_command
+              command: "{{ record_command }}"
 
       # ===== Direct volume mappings =====
-      - conditions: "{{ button == 'vol_up' }}"
+      - conditions: "{{ button == 'volume_up' }}"
         sequence:
           - action: media_player.volume_up
             target:
               entity_id: "{{ volume_target }}"
-      - conditions: "{{ button == 'vol_down' }}"
+      - conditions: "{{ button == 'volume_down' }}"
         sequence:
           - action: media_player.volume_down
             target:
               entity_id: "{{ volume_target }}"
-      - conditions: "{{ button == 'mute' }}"
+      - conditions: "{{ button == 'volume_mute' }}"
         sequence:
           - action: media_player.volume_mute
             target:
@@ -387,13 +437,15 @@ action:
         sequence: !input on_room_off
       - conditions: "{{ button == 'watch' }}"
         sequence: !input on_watch
-      - conditions: "{{ button == 'control4' }}"
+      - conditions:
+          - "{{ button == 'control4' }}"
+          - "{{ home_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input home_command
+              command: "{{ home_command }}"
       - conditions: "{{ button == 'listen' }}"
         sequence: !input on_listen
       - conditions: "{{ button == 'list' }}"
@@ -406,155 +458,195 @@ action:
       - conditions: "{{ button == 'iii' }}"
         sequence: !input on_iii
 
-      - conditions: "{{ button == 'guide' }}"
+      - conditions:
+          - "{{ button == 'guide' }}"
+          - "{{ guide_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input guide_command
-      - conditions: "{{ button == 'page_up' }}"
+              command: "{{ guide_command }}"
+      - conditions:
+          - "{{ button == 'page_up' }}"
+          - "{{ page_up_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input page_up_command
-      - conditions: "{{ button == 'page_down' }}"
+              command: "{{ page_up_command }}"
+      - conditions:
+          - "{{ button == 'page_down' }}"
+          - "{{ page_down_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input page_down_command
+              command: "{{ page_down_command }}"
       - conditions: "{{ button == 'prev' }}"
         sequence: !input on_prev
 
       # ===== Direct D-pad / Select mappings (remote.send_command) =====
-      - conditions: "{{ button == 'up' }}"
+      - conditions:
+          - "{{ button == 'up' }}"
+          - "{{ up_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input up_command
-      - conditions: "{{ button == 'down' }}"
+              command: "{{ up_command }}"
+      - conditions:
+          - "{{ button == 'down' }}"
+          - "{{ down_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input down_command
-      - conditions: "{{ button == 'left' }}"
+              command: "{{ down_command }}"
+      - conditions:
+          - "{{ button == 'left' }}"
+          - "{{ left_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input left_command
-      - conditions: "{{ button == 'right' }}"
+              command: "{{ left_command }}"
+      - conditions:
+          - "{{ button == 'right' }}"
+          - "{{ right_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input right_command
-      - conditions: "{{ button == 'select' }}"
+              command: "{{ right_command }}"
+      - conditions:
+          - "{{ button == 'select' }}"
+          - "{{ select_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input select_command
+              command: "{{ select_command }}"
 
-      - conditions: "{{ button == 'ch_up' }}"
+      - conditions:
+          - "{{ button == 'channel_up' }}"
+          - "{{ channel_up_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input channel_up_command
-      - conditions: "{{ button == 'ch_down' }}"
+              command: "{{ channel_up_command }}"
+      - conditions:
+          - "{{ button == 'channel_down' }}"
+          - "{{ channel_down_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input channel_down_command
+              command: "{{ channel_down_command }}"
 
-      - conditions: "{{ button == 'info' }}"
+      - conditions:
+          - "{{ button == 'info' }}"
+          - "{{ info_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input info_command
-      - conditions: "{{ button == 'menu' }}"
+              command: "{{ info_command }}"
+      - conditions:
+          - "{{ button == 'menu' }}"
+          - "{{ menu_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input menu_command
-      - conditions: "{{ button == 'cancel' }}"
+              command: "{{ menu_command }}"
+      - conditions:
+          - "{{ button == 'cancel' }}"
+          - "{{ cancel_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input cancel_command
+              command: "{{ cancel_command }}"
 
       - conditions: "{{ button == 'dvr' }}"
         sequence: !input on_dvr
 
-      - conditions: "{{ button == 'red' }}"
+      - conditions:
+          - "{{ button == 'red' }}"
+          - "{{ red_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input red_command
-      - conditions: "{{ button == 'green' }}"
+              command: "{{ red_command }}"
+      - conditions:
+          - "{{ button == 'green' }}"
+          - "{{ green_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input green_command
-      - conditions: "{{ button == 'yellow' }}"
+              command: "{{ green_command }}"
+      - conditions:
+          - "{{ button == 'yellow' }}"
+          - "{{ yellow_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input yellow_command
-      - conditions: "{{ button == 'blue' }}"
+              command: "{{ yellow_command }}"
+      - conditions:
+          - "{{ button == 'blue' }}"
+          - "{{ blue_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input blue_command
+              command: "{{ blue_command }}"
 
       # ===== Number pad (remote.send_command) =====
-      - conditions: "{{ button.startswith('digit_') }}"
+      - conditions:
+          - "{{ button.startswith('digit_') }}"
+          - "{{ digit_template != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
               command: "{{ digit_template | replace('{n}', button[6:]) }}"
-      - conditions: "{{ button == 'star' }}"
+      - conditions:
+          - "{{ button == 'star' }}"
+          - "{{ star_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input star_command
-      - conditions: "{{ button == 'hash' }}"
+              command: "{{ star_command }}"
+      - conditions:
+          - "{{ button == 'hash' }}"
+          - "{{ hash_command != '' }}"
         sequence:
           - action: remote.send_command
             target:
               entity_id: !input remote_target
             data:
-              command: !input hash_command
+              command: "{{ hash_command }}"
