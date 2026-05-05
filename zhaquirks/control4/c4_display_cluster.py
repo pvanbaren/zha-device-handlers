@@ -33,6 +33,7 @@ _QUIRK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _QUIRK_DIR not in sys.path:
     sys.path.insert(0, _QUIRK_DIR)
 
+import zigpy.exceptions
 import zigpy.types as t
 from zigpy.quirks import CustomCluster
 from zigpy.zcl import foundation
@@ -358,6 +359,20 @@ class C4SR260DisplayCluster(CustomCluster):
                 "C4 display [%s]: show_list id=0x%04X items=%d sel=%d title=%r",
                 device.ieee, list_id, len(items_list), sel, title_str,
             )
+        except zigpy.exceptions.DeliveryError as e:
+            # Sleepy-device race — the SR260 only listens when polling.  If
+            # the device is asleep when we try to push the menu, bellows
+            # times out waiting for the APS ack.  Drop the menu state and
+            # warn, but don't propagate: the caller (an HA automation /
+            # service call) shouldn't see a hard error for what is in
+            # practice a "user wasn't holding the remote" condition.
+            _LOGGER.warning(
+                "C4 display [%s]: show_list undelivered (%s) — "
+                "remote likely asleep; press a key on the remote and "
+                "retry while it's awake",
+                device.ieee, e,
+            )
+            self._active_menu = None
         except Exception:
             _LOGGER.warning(
                 "C4 display: show_list send failed", exc_info=True,
@@ -374,6 +389,12 @@ class C4SR260DisplayCluster(CustomCluster):
             await _c4_send_clear_display(device)
             if had_menu:
                 _LOGGER.info("C4 display [%s]: close_list", device.ieee)
+        except zigpy.exceptions.DeliveryError as e:
+            _LOGGER.warning(
+                "C4 display [%s]: close_list undelivered (%s) — "
+                "remote likely asleep",
+                device.ieee, e,
+            )
         except Exception:
             _LOGGER.warning(
                 "C4 display: close_list send failed", exc_info=True,
