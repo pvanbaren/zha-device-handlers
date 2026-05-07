@@ -23,9 +23,9 @@ blueprint:
     All remaining buttons (Room Off, Watch, Listen, List, I/II/III, Prev, DVR)
     expose an optional Action input that is invoked on press.
 
-    LCD sync: an optional input_text helper is mirrored to the remote's LCD
-    on every change of the helper and on every motion_wake (so the message
-    reappears each time the remote is picked up).
+    LCD text: an optional string is pushed to the remote's LCD on every
+    motion_wake (so the message reappears each time the remote is picked
+    up). Templates are honoured — e.g. "{{ states('sensor.kitchen_temp') }}".
 
     Requires the custom C4-SR260 ZHA quirk (control4_remote.py); button names
     come from SR260_BUTTON_MAP and the trigger fires on remote_button_short_press.
@@ -41,16 +41,16 @@ blueprint:
               manufacturer: Control4
               model: C4-SR260
 
-    display_text_source:
-      name: LCD text source
+    display_text:
+      name: LCD text
       description: >
-        An input_text helper whose value is mirrored to the SR260's LCD.
-        The current value is pushed on every change of the helper and on
-        every motion_wake (so the message reappears each time the remote
-        is picked up).
+        Text pushed to the remote's LCD on every motion_wake (remote
+        pickup). Leave blank to skip LCD writes. Templates are rendered
+        at push time, e.g. "{{ states('sensor.kitchen_temp') | round }}°F".
+      default: ""
       selector:
-        entity:
-          domain: input_text
+        text:
+          multiline: false
 
     volume_target:
       name: Volume Target
@@ -315,14 +315,11 @@ trigger:
       device_id: !input remote
       command: motion_wake
     id: lcd_wake
-  - platform: state
-    entity_id: !input display_text_source
-    id: lcd_change
 
 variables:
   volume_target: !input volume_target
   digit_template: !input digit_command_template
-  display_text_source: !input display_text_source
+  display_text: !input display_text
   remote_device: !input remote
   # ZHA stores the IEEE as the second element of the device's `connections`
   # set, e.g. {('zigbee', 'aa:bb:...')}.  Pull it out so the same blueprint
@@ -372,11 +369,14 @@ variables:
 
 action:
   - choose:
-      # ===== LCD sync (input_text helper → SR260 display) =====
-      # Fires on motion_wake (remote pickup) and on any change of the
-      # input_text helper.  Writing cluster 0xFC47 (=64583) attribute 0
-      # via zha.set_zigbee_cluster_attribute pushes the string to the LCD.
-      - conditions: "{{ trigger.id in ['lcd_wake', 'lcd_change'] }}"
+      # ===== LCD push (motion_wake → SR260 display) =====
+      # Fires whenever the remote wakes up.  Writing cluster 0xFC47
+      # (=64583) attribute 0 via zha.set_zigbee_cluster_attribute pushes
+      # the string to the LCD.  Templates in display_text are rendered
+      # at action time.  Skipped when display_text is blank.
+      - conditions:
+          - "{{ trigger.id == 'lcd_wake' }}"
+          - "{{ display_text != '' }}"
         sequence:
           - action: zha.set_zigbee_cluster_attribute
             data:
@@ -385,7 +385,7 @@ action:
               endpoint_id: 1
               cluster_id: 64583
               attribute: 0
-              value: "{{ states(display_text_source) }}"
+              value: "{{ display_text }}"
 
       # ===== Direct transport mappings (remote.send_command) =====
       - conditions:
