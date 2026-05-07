@@ -23,6 +23,10 @@ blueprint:
     All remaining buttons (Room Off, Watch, Listen, List, I/II/III, Prev, DVR)
     expose an optional Action input that is invoked on press.
 
+    LCD sync: an optional input_text helper is mirrored to the remote's LCD
+    on every change of the helper and on every motion_wake (so the message
+    reappears each time the remote is picked up).
+
     Requires the custom C4-SR260 ZHA quirk (control4_remote.py); button names
     come from SR260_BUTTON_MAP and the trigger fires on remote_button_short_press.
   domain: automation
@@ -36,6 +40,17 @@ blueprint:
             - integration: zha
               manufacturer: Control4
               model: C4-SR260
+
+    display_text_source:
+      name: LCD text source
+      description: >
+        An input_text helper whose value is mirrored to the SR260's LCD.
+        The current value is pushed on every change of the helper and on
+        every motion_wake (so the message reappears each time the remote
+        is picked up).
+      selector:
+        entity:
+          domain: input_text
 
     volume_target:
       name: Volume Target
@@ -293,10 +308,28 @@ trigger:
     event_data:
       device_id: !input remote
       command: remote_button_short_press
+    id: button_press
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
+      command: motion_wake
+    id: lcd_wake
+  - platform: state
+    entity_id: !input display_text_source
+    id: lcd_change
 
 variables:
   volume_target: !input volume_target
   digit_template: !input digit_command_template
+  display_text_source: !input display_text_source
+  remote_device: !input remote
+  # ZHA stores the IEEE as the second element of the device's `connections`
+  # set, e.g. {('zigbee', 'aa:bb:...')}.  Pull it out so the same blueprint
+  # works for any SR260 without hardcoding the address.
+  remote_ieee: >-
+    {% set conns = device_attr(remote_device, 'connections') | list %}
+    {{ conns[0][1] if conns else '' }}
   # Expose every command-string input as a Jinja variable so the choose
   # conditions below can short-circuit on empty (unset) commands instead
   # of firing remote.send_command with "" — which most TV / streamer
@@ -330,7 +363,7 @@ variables:
   star_command:         !input star_command
   hash_command:         !input hash_command
   button: >-
-    {% set d = trigger.event.data %}
+    {% set d = trigger.event.data if trigger.event is defined else {} %}
     {%- if d.args is mapping and 'button' in d.args -%}
       {{ d.args.button }}
     {%- elif d.params is mapping and 'button' in d.params -%}
@@ -339,6 +372,21 @@ variables:
 
 action:
   - choose:
+      # ===== LCD sync (input_text helper → SR260 display) =====
+      # Fires on motion_wake (remote pickup) and on any change of the
+      # input_text helper.  Writing cluster 0xFC47 (=64583) attribute 0
+      # via zha.set_zigbee_cluster_attribute pushes the string to the LCD.
+      - conditions: "{{ trigger.id in ['lcd_wake', 'lcd_change'] }}"
+        sequence:
+          - action: zha.set_zigbee_cluster_attribute
+            data:
+              cluster_type: in
+              ieee: "{{ remote_ieee }}"
+              endpoint_id: 1
+              cluster_id: 64583
+              attribute: 0
+              value: "{{ states(display_text_source) }}"
+
       # ===== Direct transport mappings (remote.send_command) =====
       - conditions:
           - "{{ button == 'play' }}"
