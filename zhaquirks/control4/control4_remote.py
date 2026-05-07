@@ -179,13 +179,25 @@ class Control4SR260Remote(CustomDevice):
     # bb→be (mapped to SHORT_PRESS / SHORT_RELEASE).  Long-press detection
     # can be built in HA by measuring the gap between the two events.
     device_automation_triggers = {
-        (_action, _btn_name): {
-            COMMAND:     _action,
+        # Per-button press / release triggers — one entry per button.
+        **{
+            (_action, _btn_name): {
+                COMMAND:     _action,
+                CLUSTER_ID:  C4_BUTTON_CLUSTER_ID,
+                ENDPOINT_ID: SR260_BUTTON_EP_MAP[_btn_id],
+            }
+            for _btn_id, _btn_name in SR260_BUTTON_MAP.items()
+            for _action in (SHORT_PRESS, SHORT_RELEASE)
+        },
+        # Wake-from-sleep trigger — c4.zr.mot, fired by the remote
+        # whenever motion / pickup wakes it up (and once on each
+        # cold-boot / rejoin).  Routed through the C4RemoteButtonCluster
+        # on EP 197, same path as the press / release events.
+        ("motion_wake", "remote"): {
+            COMMAND:     "motion_wake",
             CLUSTER_ID:  C4_BUTTON_CLUSTER_ID,
-            ENDPOINT_ID: SR260_BUTTON_EP_MAP[_btn_id],
-        }
-        for _btn_id, _btn_name in SR260_BUTTON_MAP.items()
-        for _action in (SHORT_PRESS, SHORT_RELEASE)
+            ENDPOINT_ID: 197,
+        },
     }
 
 

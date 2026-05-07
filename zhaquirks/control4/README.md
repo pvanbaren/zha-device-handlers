@@ -361,16 +361,27 @@ automation.
 
 **Motion / wake event** — every time the SR260 wakes from sleep
 because the user picked it up or moved it, the quirk fires a
-`zha_event` with `command: motion_wake`. Hook an automation to it to,
-say, turn on a lamp when the remote is grabbed:
+`zha_event` with `command: motion_wake` AND exposes it as a HA device
+trigger. The easiest way to use it is from the automation UI:
+
+> **Settings → Automations → Add Automation → Trigger type: Device →
+> Device: <your SR260> → Trigger: `motion_wake remote`.**
+
+That ends up sitting in the same dropdown as the per-button presses
+("Remote button short press, play", etc.) and the standard ZHA
+device-availability triggers ("Identify has been pressed", "Device
+offline"), so no YAML / `zha_event` plumbing is needed for the common
+case.
+
+If you prefer raw YAML:
 
 ```yaml
 trigger:
-  - platform: event
-    event_type: zha_event
-    event_data:
-      device_id: <SR260 device id>
-      command: motion_wake
+  - platform: device
+    device_id: <SR260 device id>
+    domain: zha
+    type: motion_wake
+    subtype: remote
 action:
   - service: light.turn_on
     target:
