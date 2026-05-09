@@ -9,13 +9,17 @@ blueprint:
          manually), it pushes a paged menu to the SR260's LCD via the
          show_list cluster command.
       2. The automation then waits up to `selection_timeout` for the
-         user to navigate the menu and press Select.
+         user to navigate the menu and press Select (or Cancel).
       3. The SR260 quirk fires a `menu_select` zha_event with the chosen
-         item label.
-      4. The automation matches that label against the item slots you
-         filled in and runs the corresponding action.
-      5. If the user doesn't pick anything within the timeout (or
-         dismisses the menu with Cancel/Control4), no action runs.
+         item label, or a `menu_cancel` zha_event if the user pressed
+         the Cancel key.
+      4. On menu_select, the automation matches the label against the
+         item slots you filled in and runs the corresponding action.
+         On menu_cancel, the quirk has already dismissed the LCD list,
+         so the automation just stops without running any item action.
+      5. If the user doesn't pick anything within the timeout, the
+         automation sends close_list to clear the menu off the LCD and
+         no item action runs.
 
     Up to 8 items are supported.  Empty item slots are skipped both when
     sending the menu to the remote and in the dispatch table — the order
@@ -179,6 +183,14 @@ trigger: !input show_trigger
 
 variables:
   remote: !input sr260_device
+  # IEEE comes from the device's Zigbee connection tuple — ZHA stores
+  # it as ('zigbee', '00:0f:ff:…') in `connections`.  Cached here so
+  # both show_list and close_list reference one source.
+  remote_ieee: >-
+    {%- for conn_type, conn_id in device_attr(remote, 'connections')
+           if conn_type == 'zigbee' -%}
+    {{ conn_id }}
+    {%- endfor -%}
   menu_title: !input menu_title
   initial_index: !input initial_index
   item_1: !input item_1
@@ -196,39 +208,69 @@ action:
   # ----------------------------------------------------------------
   - service: zha.issue_zigbee_cluster_command
     data:
-      # IEEE comes from the device's Zigbee connection tuple — ZHA
-      # stores it as ('zigbee', '00:0f:ff:…') in `connections`.
-      ieee: >-
-        {%- for conn_type, conn_id in device_attr(remote, 'connections')
-               if conn_type == 'zigbee' -%}
-        {{ conn_id }}
-        {%- endfor -%}
+      ieee: "{{ remote_ieee }}"
       endpoint_id: 1
       cluster_id: 64583            # 0xFC47 — C4SR260DisplayCluster
       cluster_type: in
       command: 0                    # show_list
       command_type: server
-      args:
-        - "{{ menu_title }}"
-        - >-
+      params:
+        title: "{{ menu_title }}"
+        items: >-
           {{ [item_1, item_2, item_3, item_4,
               item_5, item_6, item_7, item_8]
              | select | join('|') }}
-        - "{{ initial_index | int(0) }}"
+        selected_index: "{{ initial_index | int(0) }}"
 
   # ----------------------------------------------------------------
-  # 2. Wait for the user's menu_select event from this SR260.
-  #    On timeout (no selection within `selection_timeout`), abort
-  #    the automation cleanly so no action fires.
+  # 2. Wait for the user's menu_select OR menu_cancel event from this
+  #    SR260.  Cancel fires `menu_cancel` so we can exit immediately
+  #    instead of blocking until selection_timeout — otherwise the
+  #    next show-trigger press would queue behind a stuck run for up
+  #    to selection_timeout seconds.
   # ----------------------------------------------------------------
   - wait_for_trigger:
       - platform: event
         event_type: zha_event
+        id: select
         event_data:
           device_id: !input sr260_device
           command: menu_select
+      - platform: event
+        event_type: zha_event
+        id: cancel
+        event_data:
+          device_id: !input sr260_device
+          command: menu_cancel
     timeout: !input selection_timeout
-    continue_on_timeout: false
+    continue_on_timeout: true
+
+  # ----------------------------------------------------------------
+  # 2a. Timeout path — send close_list to clear the menu off the LCD,
+  #     then stop the automation so no item action fires.
+  # ----------------------------------------------------------------
+  - if:
+      - "{{ wait.trigger is none }}"
+    then:
+      - service: zha.issue_zigbee_cluster_command
+        data:
+          ieee: "{{ remote_ieee }}"
+          endpoint_id: 1
+          cluster_id: 64583
+          cluster_type: in
+          command: 1                  # close_list
+          command_type: server
+          params: {}
+      - stop: "menu selection timed out"
+
+  # ----------------------------------------------------------------
+  # 2b. Cancel path — quirk has already cleared the LCD via c4.ln.le,
+  #     so just stop without firing any item action.
+  # ----------------------------------------------------------------
+  - if:
+      - "{{ wait.trigger.id == 'cancel' }}"
+    then:
+      - stop: "menu cancelled"
 
   # ----------------------------------------------------------------
   # 3. Dispatch by item label.

@@ -50,6 +50,7 @@ from c4_helpers import (
     SR260_BUTTON_MAP,
     _c4_send_clear_display,
     _c4_send_list_items_response,
+    _c4_send_room_info,
     _sync_ep1_level,
     _sync_ep1_onoff,
 )
@@ -598,8 +599,35 @@ class C4RemoteButtonCluster(C4ButtonCluster):
     duration is left to the receiver.
 
     Event mapping:
-      c4.zr.bb <btn> ...   →  SHORT_PRESS    on virtual EP 100+btn
-      c4.zr.be <btn> ...   →  SHORT_RELEASE  on virtual EP 100+btn
+      c4.zr.bb <btn> ...                →  SHORT_PRESS    on virtual EP 100+btn
+      c4.zr.bh <btn> ...                →  LONG_PRESS     on virtual EP 100+btn
+                                           (one per bh message — the SR260
+                                            re-sends bh repeatedly while a
+                                            button is held, which lets
+                                            automations auto-repeat their
+                                            action; observed `c4.zr.bh 0c
+                                            0000 0000` for held Vol+).
+      c4.zr.be <btn> ...                →  SHORT_RELEASE  on virtual EP 100+btn
+      c4.ln.is  <listID> <selIdx> ...   →  menu_select zha_event (with item label)
+                                           + push ri "<item>" "" then le
+      c4.ln.ise <listID> <selIdx> ...   →  (no-op — release of the matching is)
+      c4.ln.cn  <listID> <selIdx>       →  menu_cancel zha_event (with title)
+                                           + send c4.ln.le to dismiss the menu
+
+    `is`/`ise`/`cn` replace `bb`/`be` for Select (`0x10`) and Cancel
+    (`0x18`) while a list is on screen — the SR260 does not emit the
+    HID-layer button events when an LCD list is up.  The cluster does NOT
+    synthesize SHORT_PRESS / SHORT_RELEASE on the Select / Cancel virtual
+    EPs in that case: when a menu is up the user is interacting with the
+    menu, not with the underlying media device, so firing a parallel
+    button event would cause double-actions (e.g. dismissing the menu
+    AND sending a Back keystroke to the TV).  Bind your menu logic to
+    the `menu_select` / `menu_cancel` zha_events instead.
+
+    On every `is`, the cluster also pushes `c4.ln.ri "<selected item>" ""`
+    followed by `c4.ln.le`, so the LCD shows the chosen item as the
+    display text once the list overlay closes — mirroring the official
+    controller's `is → ri → ise → le` sequence.
 
     Other observed namespaces are logged and ignored (mot/tm/loc/bl/ln.*) —
     a quirk that wants to drive the LCD or sync the clock can subclass and
@@ -618,9 +646,6 @@ class C4RemoteButtonCluster(C4ButtonCluster):
 
     def _sync_cc_event(self, button_id, click_count):
         pass
-
-    # Button id of the SR260 "Select / OK" key (matches SR260_BUTTON_MAP).
-    _SELECT_BUTTON_ID_HEX = "10"
 
     def _process_raw(self, hdr, args):
         """Intercept SR260 LCD `c4.ln.gi` page requests, then defer to base.
@@ -711,17 +736,44 @@ class C4RemoteButtonCluster(C4ButtonCluster):
 
     def _handle_state_announcement(self, namespace, data):
         if namespace == "c4.zr.bb" and data:
-            button_hex = data[0]
-            # Detect "Select pressed while a list is on screen": fire a
-            # menu_select event with the cached item, then auto-clear.
-            if button_hex.lower() == self._SELECT_BUTTON_ID_HEX:
-                list_id = self._parse_hex(data, 1)
-                sel_idx = self._parse_hex(data, 2)
-                if list_id:
-                    self._fire_menu_select(list_id, sel_idx)
-            self._fire_button_event(button_hex, SHORT_PRESS)
+            self._fire_button_event(data[0], SHORT_PRESS)
+        elif namespace == "c4.zr.bh" and data:
+            # Button-hold: SR260 re-sends `c4.zr.bh <btn> 0000 0000` every
+            # ~100ms while a button is held down (after the initial bb).
+            # Fire LONG_PRESS per message so HA automations can auto-repeat
+            # their action — e.g. volume_up bumps the volume on every tick.
+            self._fire_button_event(data[0], LONG_PRESS)
         elif namespace == "c4.zr.be" and data:
             self._fire_button_event(data[0], SHORT_RELEASE)
+        elif namespace == "c4.ln.is" and data:
+            # Item-select begin: user pressed OK on a highlighted list item.
+            # When a list is on screen the SR260 emits this in place of
+            # `bb 0x10` — fire menu_select with the resolved item (which
+            # also dismisses the LCD list via `c4.ln.le`).  Do NOT also
+            # fire SHORT_PRESS on the Select EP: when a menu is up the
+            # user's intent is to choose a menu item, not to send a
+            # Select keystroke to the underlying media device.
+            list_id = self._parse_hex(data, 0)
+            sel_idx = self._parse_hex(data, 1)
+            self._fire_menu_select(list_id, sel_idx)
+        elif namespace == "c4.ln.ise" and data:
+            # Item-select end: release of the matching `is` (replaces be 0x10).
+            # No-op for the same reason as `is` — see above.
+            pass
+        elif namespace == "c4.ln.cn":
+            # Cancel pressed while a list is on screen.  The SR260 emits
+            # `c4.ln.cn <listID> <selIdx>` in place of `bb 0x18`/`be 0x18`
+            # — there is no parallel HID-layer event.  Fire `menu_cancel`
+            # (so dispatcher automations waiting on the menu can exit
+            # cleanly without waiting for selection_timeout) and dismiss
+            # the LCD list.  Do NOT also fire SHORT_PRESS on the Cancel
+            # EP: when a menu is up the user's intent is to dismiss it,
+            # not to send a Back keystroke to the underlying media device.
+            # Captured in sniff/test-case-press-cancel-while-menu-up.txt
+            # frame 38785.
+            list_id = self._parse_hex(data, 0)
+            sel_idx = self._parse_hex(data, 1)
+            self._fire_menu_cancel(list_id, sel_idx)
         elif namespace == "c4.zr.mot":
             # SR260 woke from sleep due to motion / pickup.  Fire a
             # zha_event so HA automations can react (e.g. turn on a
@@ -759,19 +811,25 @@ class C4RemoteButtonCluster(C4ButtonCluster):
             return 0
 
     def _fire_menu_select(self, list_id: int, sel_idx: int) -> None:
-        """Fire `menu_select` zha_event and auto-clear the menu."""
+        """Fire `menu_select` zha_event, update LCD labels, dismiss list.
+
+        After firing the zha_event, pushes `c4.ln.ri "<item>" ""` so the
+        SR260 LCD shows the selected item as the display text — then
+        sends `c4.ln.le` to close the list overlay so the label becomes
+        visible.  Mirrors the official Control4 controller's
+        `is → ri → ise → le` sequence (see
+        documentation/control4-sr260-remote-protocol.md).
+        """
         display = self._get_display_cluster()
-        if display is None:
-            return
-        menu = getattr(display, "_active_menu", None)
-        if menu is None or menu.get("list_id") != list_id:
-            # Stale / unknown list — surface the indices but no item label.
-            item = None
-            title = ""
-        else:
-            items = menu.get("items") or []
-            item = items[sel_idx] if 0 <= sel_idx < len(items) else None
-            title = menu.get("title") or ""
+        item = None
+        title = ""
+        if display is not None:
+            menu = getattr(display, "_active_menu", None)
+            if menu is not None and menu.get("list_id") == list_id:
+                items = menu.get("items") or []
+                item = items[sel_idx] if 0 <= sel_idx < len(items) else None
+                title = menu.get("title") or ""
+            display._active_menu = None
 
         self.listener_event(
             "zha_send_event",
@@ -789,11 +847,66 @@ class C4RemoteButtonCluster(C4ButtonCluster):
             list_id, sel_idx, item,
         )
 
-        # Clear cached state and dismiss the LCD list so behaviour matches
-        # the official Control4 controller (which sends c4.ln.le on Select).
+        asyncio.ensure_future(self._show_selection_and_close(item or ""))
+
+    def _fire_menu_cancel(self, list_id: int, sel_idx: int) -> None:
+        """Fire `menu_cancel` zha_event and dismiss the LCD list.
+
+        Mirrors `_fire_menu_select` but for the cancel path: pulls the
+        title from the active menu (if any), clears the cached menu,
+        schedules a `c4.ln.le` send, and emits a `menu_cancel` zha_event
+        carrying the same shape as `menu_select` minus the chosen item.
+        Dispatcher automations should listen for both `menu_select` and
+        `menu_cancel` so a Cancel exits the wait_for_trigger immediately
+        instead of blocking until `selection_timeout`.
+        """
+        display = self._get_display_cluster()
+        title = ""
+        if display is not None:
+            menu = getattr(display, "_active_menu", None)
+            if menu is not None and menu.get("list_id") == list_id:
+                title = menu.get("title") or ""
+            display._active_menu = None
+
+        self.listener_event(
+            "zha_send_event",
+            "menu_cancel",
+            {
+                "list_id": list_id,
+                "selected_index": sel_idx,
+                "title": title,
+                ENDPOINT_ID: self.endpoint.endpoint_id,
+            },
+        )
+        _LOGGER.info(
+            "C4 SR260: menu_cancel list=0x%04X idx=%d title=%r",
+            list_id, sel_idx, title,
+        )
+
+        asyncio.ensure_future(self._clear_lcd_after_select())
+
+    def _dismiss_lcd_list(self) -> None:
+        """Clear cached menu state and schedule a `c4.ln.le` send."""
+        display = self._get_display_cluster()
         if display is not None:
             display._active_menu = None
         asyncio.ensure_future(self._clear_lcd_after_select())
+
+    async def _show_selection_and_close(self, item: str) -> None:
+        """Push `ri "<item>" ""` then `le` to dismiss the list."""
+        device = self.endpoint.device
+        try:
+            await _c4_send_room_info(device, item, "")
+        except Exception:
+            _LOGGER.debug(
+                "C4 SR260: post-select c4.ln.ri send failed", exc_info=True,
+            )
+        try:
+            await _c4_send_clear_display(device)
+        except Exception:
+            _LOGGER.debug(
+                "C4 SR260: post-select c4.ln.le send failed", exc_info=True,
+            )
 
     async def _clear_lcd_after_select(self) -> None:
         try:

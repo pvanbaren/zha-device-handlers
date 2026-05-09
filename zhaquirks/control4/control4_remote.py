@@ -42,6 +42,7 @@ from zhaquirks.const import (
     ENDPOINT_ID,
     ENDPOINTS,
     INPUT_CLUSTERS,
+    LONG_PRESS,
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
@@ -175,11 +176,13 @@ class Control4SR260Remote(CustomDevice):
     }
 
     # One trigger entry per (action, button_name).
-    # SR260 has no separate hold/click-count protocol — each press emits
-    # bb→be (mapped to SHORT_PRESS / SHORT_RELEASE).  Long-press detection
-    # can be built in HA by measuring the gap between the two events.
+    # SR260 has no click-count protocol, but it does have a separate hold
+    # message: `c4.zr.bh <btn>` is re-sent every ~100ms while the button is
+    # held, between the initial `bb` and the final `be`.  The cluster maps
+    # bb→SHORT_PRESS, bh→LONG_PRESS (one per message — automations bound to
+    # LONG_PRESS auto-repeat their action), and be→SHORT_RELEASE.
     device_automation_triggers = {
-        # Per-button press / release triggers — one entry per button.
+        # Per-button press / hold / release triggers — one entry per button.
         **{
             (_action, _btn_name): {
                 COMMAND:     _action,
@@ -187,7 +190,7 @@ class Control4SR260Remote(CustomDevice):
                 ENDPOINT_ID: SR260_BUTTON_EP_MAP[_btn_id],
             }
             for _btn_id, _btn_name in SR260_BUTTON_MAP.items()
-            for _action in (SHORT_PRESS, SHORT_RELEASE)
+            for _action in (SHORT_PRESS, LONG_PRESS, SHORT_RELEASE)
         },
         # Wake-from-sleep trigger — c4.zr.mot, fired by the remote
         # whenever motion / pickup wakes it up (and once on each

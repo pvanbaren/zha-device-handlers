@@ -23,12 +23,21 @@ blueprint:
     All remaining buttons (Room Off, Watch, Listen, List, I/II/III, Prev, DVR)
     expose an optional Action input that is invoked on press.
 
+    Hold-to-repeat: while a button is held the SR260 re-sends `c4.zr.bh`
+    every ~100ms, surfaced as remote_button_long_press by the quirk. The
+    direct mappings (volume, d-pad, transport, channel±, page±, color,
+    digits, info / menu / cancel / control4 / guide) auto-repeat for each
+    tick. The user-defined Action inputs (Watch, Listen, Room Off, List,
+    I / II / III, Prev, DVR) only fire on initial press, so a held button
+    doesn't run them dozens of times.
+
     LCD text: an optional string is pushed to the remote's LCD on every
     motion_wake (so the message reappears each time the remote is picked
     up). Templates are honoured — e.g. "{{ states('sensor.kitchen_temp') }}".
 
     Requires the custom C4-SR260 ZHA quirk (control4_remote.py); button names
-    come from SR260_BUTTON_MAP and the trigger fires on remote_button_short_press.
+    come from SR260_BUTTON_MAP and the trigger fires on
+    remote_button_short_press / remote_button_long_press.
   domain: automation
   input:
     remote:
@@ -313,6 +322,12 @@ trigger:
     event_type: zha_event
     event_data:
       device_id: !input remote
+      command: remote_button_long_press
+    id: button_hold
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
       command: motion_wake
     id: lcd_wake
 
@@ -359,6 +374,13 @@ variables:
   blue_command:         !input blue_command
   star_command:         !input star_command
   hash_command:         !input hash_command
+  # True when the trigger is a held-button auto-repeat tick (every ~100ms
+  # the SR260 re-sends `c4.zr.bh`, surfaced as remote_button_long_press).
+  # Used below to suppress one-shot user actions (Watch / Listen / Room
+  # Off / I / II / III / Prev / DVR / List) on hold so a held button
+  # doesn't fire its action 50 times — direct mappings (volume, d-pad,
+  # transport, channel±, page±, etc.) intentionally repeat for each tick.
+  is_hold: "{{ trigger.id == 'button_hold' }}"
   button: >-
     {% set d = trigger.event.data if trigger.event is defined else {} %}
     {%- if d.args is mapping and 'button' in d.args -%}
@@ -481,9 +503,16 @@ action:
               is_volume_muted: "{{ not is_state_attr(volume_target, 'is_volume_muted', true) }}"
 
       # ===== Custom-action mappings =====
-      - conditions: "{{ button == 'room_off' }}"
+      # User-defined actions fire only on initial press (not on the
+      # auto-repeat ticks from a held button), so holding e.g. Watch
+      # doesn't run on_watch dozens of times.
+      - conditions:
+          - "{{ button == 'room_off' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_room_off
-      - conditions: "{{ button == 'watch' }}"
+      - conditions:
+          - "{{ button == 'watch' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_watch
       - conditions:
           - "{{ button == 'control4' }}"
@@ -494,16 +523,26 @@ action:
               entity_id: !input remote_target
             data:
               command: "{{ home_command }}"
-      - conditions: "{{ button == 'listen' }}"
+      - conditions:
+          - "{{ button == 'listen' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_listen
-      - conditions: "{{ button == 'list' }}"
+      - conditions:
+          - "{{ button == 'list' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_list
 
-      - conditions: "{{ button == 'i' }}"
+      - conditions:
+          - "{{ button == 'i' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_i
-      - conditions: "{{ button == 'ii' }}"
+      - conditions:
+          - "{{ button == 'ii' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_ii
-      - conditions: "{{ button == 'iii' }}"
+      - conditions:
+          - "{{ button == 'iii' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_iii
 
       - conditions:
@@ -533,7 +572,9 @@ action:
               entity_id: !input remote_target
             data:
               command: "{{ page_down_command }}"
-      - conditions: "{{ button == 'prev' }}"
+      - conditions:
+          - "{{ button == 'prev' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_prev
 
       # ===== Direct D-pad / Select mappings (remote.send_command) =====
@@ -630,7 +671,9 @@ action:
             data:
               command: "{{ cancel_command }}"
 
-      - conditions: "{{ button == 'dvr' }}"
+      - conditions:
+          - "{{ button == 'dvr' }}"
+          - "{{ not is_hold }}"
         sequence: !input on_dvr
 
       - conditions:

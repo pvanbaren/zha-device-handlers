@@ -12,6 +12,7 @@
 - `control4-sr260-remote-dpad-volume-channel.txt` — definitive nav-cluster mapping
 - `control4-sr260-remote-transport-controls.txt` — definitive transport-block mapping
 - `control4-sr260-remote-initialization.txt` — power-on / rejoin sequence
+- `control4-sr260-remote-watch-menu-with-item-selected.txt` — list selection (`is`/`ise`) flow
 
 **Devices:** `0xc88b` (SR260 remote) ↔ `0x0000` (Control4 controller / Director)
 **Transport:** standard Zigbee security; Control4 channel-0 framing
@@ -48,10 +49,13 @@ sequence ID of the request it answers.
 | `bl` | remote → ctrl (announce) | `sa c4.zr.bl <id>` | backlight / wake event (one-shot, no `be` partner). Seen at the end of init and around screen-off transitions; the only observed value is `0x3a`. |
 
 **Button IDs observed:** `0x00` – `0x31` (50 distinct codes) — every physical
-key on the SR260, fully mapped below. Each tap = exactly one `bb` then one
-`be`; hold timing is left to the receiver to derive from the `bb`→`be` delta
-(this device has no separate `hc`/`he` like the Master Bedside scene
-controller).
+key on the SR260, fully mapped below. A short tap emits exactly one `bb`
+followed by one `be`. A held button emits `bb`, then a stream of
+`c4.zr.bh <btn> 0000 0000` re-sent every ~100ms while the key is held,
+then a single `be` on release — observed e.g. for held Vol+ as
+`sa c4.zr.bh 0c 0000 0000`. (Unlike the Master Bedside scene controller
+the SR260 has no `c4.dmx.hc`/`he`; `bh` is the only hold signal and there
+is no separate release-after-hold marker.)
 
 **Complete key bindings** (from operator logs of this capture, every code
 exercised at least once):
@@ -164,6 +168,33 @@ the list had already closed by then. So `bb` and `be` for the **same**
 press can carry **different** tails if the screen state changes between
 press and release.
 
+**Cancel-while-menu-up — direct capture** (`sniff/test-case-press-cancel-while-menu-up.txt`,
+frame 38785): pressing Cancel (`0x18`) with a list on screen does **not**
+emit `bb 18`/`be 18`. Instead the SR260 announces a dedicated
+`c4.ln.cn <listID:u16> <selIdx:u16>` — analogous to how `is`/`ise`
+replace `bb 10`/`be 10` for Select. There is no `cne` companion; `cn` is
+a one-shot announce (the duplicate frame 38788 is a retransmission with
+the same `0t01ab` sequence number). The controller is then expected to
+push `c4.ln.le` to actually close the menu — the SR260 keeps the LCD up
+until that arrives.
+
+```
+sa c4.ln.cn 000c 0000              ← user pressed Cancel; listID=0x000c
+(controller sends Init c4.ln.le)   ← actual dismiss
+```
+
+The SR260 quirk handles `c4.ln.cn` directly: it fires a `menu_cancel`
+zha_event (so dispatcher automations waiting on the menu can exit
+immediately) and sends `c4.ln.le` to clear the LCD. It does **not**
+also fire SHORT_PRESS on the Cancel virtual EP: when a menu is up the
+user's intent is to dismiss it, not to send a Back keystroke to the
+underlying media device — firing both would cause double-actions
+(menu dismissed AND Back sent to the TV). The same applies to
+`is`/`ise`: Select-while-menu-up fires `menu_select` only, not a
+parallel SHORT_PRESS on the Select EP. Bind menu logic to the
+`menu_select` / `menu_cancel` zha_events; bind device-control logic
+to `bb`/`be` (which fire only when no menu is up).
+
 ### `c4.ln.*` — the on-screen list / menu
 
 A small windowed-list protocol for the SR260's LCD menu. The controller seeds
@@ -173,9 +204,12 @@ a list, the remote pages items as the user scrolls.
 |---|---|---|---|
 | `ri` | ctrl → remote (Set) | `c4.ln.ri "<room>" "<active source>"` | set room / zone title and currently-active source. Second arg is empty (`""`) when no source is active, populated when one is (e.g. `c4.ln.ri "Screen Porch" "YouTube TV"`). |
 | `dm` | ctrl → remote (Init) | `c4.ln.dm <iconByte> "<message>"` | "display message" — render a single-line splash on the LCD. Observed during init as `c4.ln.dm 5a "Loading Room..."`. Closed with `c4.ln.le`. The leading byte appears to be a glyph code from the same icon table used by list-item label prefixes. |
-| `sl` | ctrl → remote (Init) | `c4.ln.sl <listID> <count> <selIdx> "<title>"` | "set list": establish a list with N items, selected index, header title (Watch / Listen / Settings). |
+| `sl` | ctrl → remote (Init) | `c4.ln.sl <listID> <count> <selIdx> "<icon><title>"` | "set list": establish a list with N items, selected index, header title (Watch / Listen / Settings). The first byte inside the quoted title is a 1-byte glyph code from the same icon table used by `c4.ln.dm` and list-item labels — observed values include `0x81` for the "Watch" header. |
 | `gi` | remote → ctrl (Init) | `c4.ln.gi <listID> <offset> <count> 00` | "get items": page request — give me `count` items starting at `offset`. |
 | (`gi` Response) | ctrl → remote | `000 "<item0>" "<item1>" …` | the requested labels. |
+| `is` | remote → ctrl (announce) | `sa c4.ln.is <listID:u16> <selIdx:u16> <p3:u16>` | **item-select begin** — user pressed OK/Select on the highlighted list item. `listID`/`selIdx` match the controller's last `c4.ln.sl`. `p3` is `0001` in every observation; semantics unconfirmed (possibly a press-type / source code). |
+| `ise` | remote → ctrl (announce) | `sa c4.ln.ise <listID:u16> <selIdx:u16> <p3:u16>` | **item-select end** — release of the matching `is`. Same trailing tuple as the matching `is`. |
+| `cn` | remote → ctrl (announce) | `sa c4.ln.cn <listID:u16> <selIdx:u16>` | **cancel** — user pressed Cancel (`0x18`) while a list was on screen. Replaces `bb 18`/`be 18` (no parallel HID-layer event); one-shot, no `cne` companion. Controller is expected to respond with `c4.ln.le` to dismiss the menu. Captured in `sniff/test-case-press-cancel-while-menu-up.txt` frame 38785. |
 | `le` | ctrl → remote (Init) | `c4.ln.le` | "list end" / leave list / message view, screen closes. |
 
 **Item-label encoding:** each quoted item starts with a 1-byte glyph code:
@@ -183,6 +217,36 @@ a list, the remote pages items as the user scrolls.
 bytes (`\xa6`/`\xb1`-ish) encode menu icons (Settings, Watch, Listen,
 Comfort, Security, Now Playing, contact names like Patricia / Clarissa /
 Lucas).
+
+The same glyph-prefix convention applies to the **`c4.ln.sl` header
+title** — the first byte inside the quoted `<title>` argument is a 1-byte
+icon code, not a printable character. Observed value: `0x81` for the
+"Watch" header (e.g. `c4.ln.sl 0007 0004 0000 "\x81Watch"`). The hex dump
+of frame `[7370]` from the watch-menu capture shows the byte sequence
+`22 81 57 61 74 63 68 22` — i.e. `"` `\x81` `W` `a` `t` `c` `h` `"`.
+
+**`is`/`ise` flow** (from `control4-sr260-remote-watch-menu-with-item-selected.txt`):
+
+```
+[7370] Set       c4.ln.sl 0007 0004 0000 "…Watch"           ← seed list 7
+[b572] Init      c4.ln.gi 0007 0000 0004 00                 ← page request
+[b572] Response  000 "\x01YouTube TV" "\x01YouTube" "\x01Netflix"
+... (user d-pads to idx 3; selection is tracked locally on the LCD) ...
+[b573] Init      c4.ln.gi 0007 0003 0001 00                 ← fetch idx 3 label
+[b573] Response  000 "\x01Prime Video"
+[b574] Announce  sa c4.ln.is  0007 0003 0001                ← OK pressed (down)
+[7371] Set       c4.ln.ri "Screen Porch" "Prime Video"      ← controller acts
+[b575] Announce  sa c4.ln.ise 0007 0003 0001                ← OK released
+[7373] Init      c4.ln.le                                   ← close list
+```
+
+While a list is on screen, pressing Select/OK does **not** emit `bb 10`/`be 10`
+— `is`/`ise` replace the HID-layer event, scoped to the list-protocol layer
+and carrying the selected item rather than a button id. The d-pad navigation
+between items is also not visible at the C4 layer (the SR260 tracks selIdx
+locally and only reports the final landed-on index in `is`/`ise`); the
+controller can still infer the active selection from the `gi` page-request
+pattern that immediately precedes the press.
 
 ---
 
@@ -276,6 +340,9 @@ Notes:
   would need to implement at minimum `ri` (title), `sl` (list header), `gi`
   request handling with paged `Response` returns, `le` (close), plus the
   icon-byte prefix on each label. For pure Home Assistant button-event use,
-  the entire `c4.ln.*` half can be ignored.
+  most of `c4.ln.*` can be ignored — but note that `is`/`ise` are
+  remote-originated *list-item-select* events and behave like a `bb`/`be`
+  pair; surfacing them as ZHA events lets HA react to LCD selections even if
+  the quirk doesn't drive the rest of the list protocol.
 - Framing / sequence / encryption is the same C4-over-Zigbee envelope the
   rest of `zhaquirks/control4/` already handles.

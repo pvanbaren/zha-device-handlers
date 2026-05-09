@@ -214,9 +214,11 @@ end-device).
 The quirk exposes one HA Event entity per physical key (50 entities total)
 and a battery sensor. Each press emits a `remote_button_short_press` action
 on key-down (the C4 `c4.zr.bb` "button begin" event) followed by a
-`remote_button_short_release` on key-up (`c4.zr.be` "button end"). The
-device has no separate hold / click-count protocol — to detect a long
-press, measure the gap between the two events in your HA automation.
+`remote_button_short_release` on key-up (`c4.zr.be` "button end"). While
+a key is held the remote re-sends `c4.zr.bh` every ~100ms, surfaced as
+`remote_button_long_press` actions — so HA automations can auto-repeat
+for held volume / channel / d-pad / transport keys by listening on
+`remote_button_long_press` in addition to `remote_button_short_press`.
 
 The Event entity names follow the physical layout:
 
@@ -325,7 +327,10 @@ data:
   cluster_type: in
   command: 0                          # show_list
   command_type: server
-  args: ["What now?", "Watch|Listen|Settings", 0]
+  params:
+    title: "What now?"
+    items: "Watch|Listen|Settings"
+    selected_index: 0
 ```
 
 Listen for the selection in an automation:
