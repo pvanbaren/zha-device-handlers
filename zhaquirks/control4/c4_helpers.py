@@ -313,12 +313,17 @@ def next_c4_seq(device) -> int:
 
 
 def _build_c4_frame(seq_num, ascii_cmd: str) -> bytes:
-    """Build a C4 serial-over-ZigBee APS payload (ASCII command + CRLF).
+    """Build a C4 serial-over-ZigBee APS payload (text command + CRLF).
 
     The APS header is generated automatically by device.request(); do NOT
     include it here.  seq_num is unused — zigpy manages the APS counter.
+
+    Encoded as latin-1 so embedded 1-byte glyph codes in the 0x80–0xFF
+    range (used as icon prefixes inside quoted args of `c4.ln.dm` /
+    `c4.ln.sl` / `c4.ln.gi`-response) pass through unchanged.  Pure-ASCII
+    commands encode identically to ASCII.
     """
-    return (ascii_cmd + "\r\n").encode("ascii")
+    return (ascii_cmd + "\r\n").encode("latin-1")
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +403,48 @@ async def _c4_send_clear_display(device) -> None:
     )
 
 
+async def _c4_send_room_info(device, room: str, source: str = "") -> None:
+    """Set the SR260 LCD's room title (row 1) and active source (row 2).
+
+    Sends `0s<seq> c4.ln.ri "<room>" "<source>"\r\n` on the C4 button profile.
+    Both args are sanitised the same way as `_c4_send_display_message`'s
+    message body — embedded `"` is stripped and `\r` / `\n` are replaced
+    with spaces so the framing isn't broken.
+
+    `source` may be empty (`""`) when no source is active — observed in
+    init captures as `c4.ln.ri "Screen Porch" ""`.
+    """
+    def _sanitise(s: str) -> str:
+        return (
+            (s or "").replace("\r", " ").replace("\n", " ").replace('"', "")
+        )
+
+    room_s = _sanitise(room)
+    source_s = _sanitise(source)
+
+    seq = next_c4_seq(device)
+    cmd = f'0s{seq:04x} c4.ln.ri "{room_s}" "{source_s}"'
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.debug(
+        "C4 display: send ri room=%r source=%r seq=0x%04x",
+        room_s, source_s, seq,
+    )
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
 async def _c4_send_list_header(
     device, list_id: int, count: int, sel_idx: int, title: str,
+    icon: int = 0x81,
 ) -> None:
-    """Send `0i<seq> c4.ln.sl <list_id> <count> <sel_idx> "<title>"\r\n`.
+    """Send `0i<seq> c4.ln.sl <list_id> <count> <sel_idx> "<icon><title>"\r\n`.
 
     Establishes a menu / list on the SR260's LCD.  The remote will respond
     with one or more `c4.ln.gi` page requests asking for the actual item
@@ -410,6 +453,11 @@ async def _c4_send_list_header(
     All three integer args are 16-bit (sent as 4 hex digits).  `title` is
     sanitised the same way `_c4_send_display_message` sanitises its message
     so the framing stays parseable.
+
+    `icon` is a 1-byte glyph code prefixed inside the quoted title (default
+    `0x81`, the byte the official Control4 controller uses for the "Watch"
+    header — see documentation/control4-sr260-remote-protocol.md).  Same
+    glyph table as `c4.ln.dm` / list-item labels.
     """
     if not 0 <= list_id <= 0xFFFF:
         raise ValueError(f"list_id out of range: {list_id}")
@@ -417,6 +465,8 @@ async def _c4_send_list_header(
         raise ValueError(f"count out of range: {count}")
     if not 0 <= sel_idx <= 0xFFFF:
         raise ValueError(f"sel_idx out of range: {sel_idx}")
+    if not 0 <= icon <= 0xFF:
+        raise ValueError(f"icon out of range: {icon}")
 
     sanitised = (
         (title or "").replace("\r", " ").replace("\n", " ").replace('"', "")
@@ -425,13 +475,14 @@ async def _c4_send_list_header(
     seq = next_c4_seq(device)
     cmd = (
         f'0i{seq:04x} c4.ln.sl {list_id:04x} {count:04x} {sel_idx:04x} '
-        f'"{sanitised}"'
+        f'"{chr(icon)}{sanitised}"'
     )
     data = _build_c4_frame(seq, cmd)
 
     _LOGGER.debug(
-        "C4 display: send sl id=0x%04x count=%d sel=%d title=%r seq=0x%04x",
-        list_id, count, sel_idx, sanitised, seq,
+        "C4 display: send sl id=0x%04x count=%d sel=%d icon=0x%02x "
+        "title=%r seq=0x%04x",
+        list_id, count, sel_idx, icon, sanitised, seq,
     )
     await device.request(
         profile=C4_PROFILE_BUTTON,
@@ -457,17 +508,16 @@ async def _c4_send_list_items_response(
     `items` is an iterable of strings.  Embedded `"` is stripped so the
     quoting stays well-formed; `\r` / `\n` are replaced with spaces so the
     line terminator isn't broken.
+
+    The encoded frame must fit in a single Zigbee APS payload — bellows
+    raises `MESSAGE_TOO_LONG` (status 56) above ~75 bytes once NWK
+    encryption overhead is added.  We greedily fit as many items as we can
+    and trust the remote to re-page (issue another `gi` for the remainder)
+    — the same chunking the official Control4 controller does, e.g. it
+    returns only 3 of 4 requested items in the watch-menu capture and the
+    SR260 follows up with `gi <listID> 0003 0001` for the missing one.
     """
     icon_byte = icon & 0xFF
-    if icon_byte > 0x7F:
-        # _build_c4_frame uses ASCII (7-bit); high-bit icons would raise.
-        # Fall back to 0x01 with a warning so the call still succeeds.
-        _LOGGER.warning(
-            "C4 display: icon 0x%02X is high-bit; using 0x01 instead "
-            "(ASCII transport cannot carry it)", icon_byte,
-        )
-        icon_byte = 0x01
-
     icon_char = chr(icon_byte)
     parts: list[str] = []
     for raw in items:
@@ -475,14 +525,43 @@ async def _c4_send_list_items_response(
         s = s.replace("\r", " ").replace("\n", " ").replace('"', "")
         parts.append(f'"{icon_char}{s}"')
 
-    body = " ".join(parts)
-    cmd = f"0r{request_seq} 000 {body}".rstrip()
+    # Conservative cap — empirically, ~70 bytes fits reliably; bellows
+    # rejects above ~75 once NWK security overhead is added.
+    MAX_FRAME_LEN = 70
+
+    header = f"0r{request_seq} 000"
+    # Pre-count: header + CRLF (2 bytes appended by _build_c4_frame).
+    running_len = len(header) + 2
+    fit_count = 0
+    for part in parts:
+        # +1 for the space separator between header/parts.
+        candidate_len = running_len + 1 + len(part)
+        if candidate_len > MAX_FRAME_LEN:
+            break
+        running_len = candidate_len
+        fit_count += 1
+
+    if fit_count > 0:
+        body = " ".join(parts[:fit_count])
+        cmd = f"{header} {body}"
+    else:
+        # Even one item overflows.  Send the bare OK token so the remote
+        # gets a syntactically valid response and re-pages (or gives up).
+        cmd = header
     data = _build_c4_frame(0, cmd)
 
-    _LOGGER.debug(
-        "C4 display: send gi response seq=%s items=%d icon=0x%02X",
-        request_seq, len(parts), icon_byte,
-    )
+    if fit_count < len(parts):
+        _LOGGER.debug(
+            "C4 display: send gi response seq=%s items=%d/%d (chunked) "
+            "icon=0x%02X len=%d",
+            request_seq, fit_count, len(parts), icon_byte, len(data),
+        )
+    else:
+        _LOGGER.debug(
+            "C4 display: send gi response seq=%s items=%d icon=0x%02X len=%d",
+            request_seq, fit_count, icon_byte, len(data),
+        )
+
     await device.request(
         profile=C4_PROFILE_BUTTON,
         cluster=C4_CLUSTER_ID,
