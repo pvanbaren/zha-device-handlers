@@ -19,3 +19,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Claude Code: personal overrides and MCP config with embedded credentials
+.claude/settings.local.json
+.mcp.json
