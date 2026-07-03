@@ -101,7 +101,6 @@ class Control4SR260Remote(CustomDevice):
         MODELS_INFO: [
             ("Control4", "C4-SR260"),
             (None, "C4-SR260"),
-            (None, None),
         ],
         ENDPOINTS: {
             1: {

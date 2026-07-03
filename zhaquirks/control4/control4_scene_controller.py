@@ -94,7 +94,6 @@ class Control4KC120277SceneController(CustomDevice):
         MODELS_INFO: [
             ("Control4", "C4-KC120277"),
             (None, "C4-KC120277"),
-            (None, None),
         ],
         ENDPOINTS: {
             1: {

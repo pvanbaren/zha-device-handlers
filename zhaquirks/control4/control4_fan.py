@@ -407,7 +407,6 @@ class Control4C4SF120FanController(CustomDevice):
         MODELS_INFO: [
             ("Control4", "C4-4SF120"),
             (None, "C4-4SF120"),
-            (None, None),
         ],
         ENDPOINTS: {
             1: {
