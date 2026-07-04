@@ -275,6 +275,7 @@ class Control4APD120Dimmer(CustomDevice):
         MODELS_INFO: [
             ("Control4", "C4-APD120"),
             (None, "C4-APD120"),
+            ("Control4", None),
         ],
         ENDPOINTS: {
             1: {

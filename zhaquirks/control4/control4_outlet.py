@@ -383,6 +383,7 @@ class Control4LOZ5S1WOutlet(CustomDevice):
         MODELS_INFO: [
             ("Control4", "loz-5s1-w"),
             (None, "loz-5s1-w"),
+            ("Control4", None),
         ],
         ENDPOINTS: {
             1: {

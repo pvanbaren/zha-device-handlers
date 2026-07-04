@@ -107,6 +107,7 @@ class Control4SW120Switch(CustomDevice):
         MODELS_INFO: [
             ("Control4", "C4-SW120277"),
             (None, "C4-SW120277"),
+            ("Control4", None),
         ],
         ENDPOINTS: {
             1: {
