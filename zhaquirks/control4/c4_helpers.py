@@ -959,23 +959,42 @@ class C4ConfigCluster(CustomCluster):
         super().handle_cluster_request(hdr, args, dst_addressing=dst_addressing)
 
     def handle_message(self, hdr, args):
-        # Intercept patch calls handle_message(None, raw_bytes).
+        # Intercept patch calls handle_message(None, raw_bytes). Use
+        # self.deserialize() for full parsing (header + schema-aware body)
+        # so super().handle_message() receives the structured args object
+        # it expects (e.g. ReadAttributesResponse with .attribute_reports).
+        raw_body = None
         if hdr is None and isinstance(args, (bytes, bytearray)) and len(args) >= 3:
+            raw = bytes(args)
             try:
-                hdr, args = foundation.ZCLHeader.deserialize(args)
+                hdr, args = self.deserialize(raw)
             except Exception as e:
-                _LOGGER.warning(
-                    "C4 config ep %s: failed to parse ZCL header: %s — raw=%s",
+                # Schema parse failed — recover header so we can still
+                # dispatch based on command_id with raw body bytes.
+                try:
+                    hdr, raw_body = foundation.ZCLHeader.deserialize(raw)
+                    args = raw_body
+                except Exception as e2:
+                    _LOGGER.warning(
+                        "C4 config ep %s: failed to parse ZCL header: %s — raw=%s",
+                        self.endpoint.endpoint_id, e2, raw.hex(),
+                    )
+                    return
+                _LOGGER.debug(
+                    "C4 config ep %s: schema deserialize failed (%s) — "
+                    "falling back to raw body",
                     self.endpoint.endpoint_id, e,
-                    args.hex() if isinstance(args, (bytes, bytearray)) else repr(args),
                 )
-                return
+            else:
+                # self.deserialize returns raw bytes for unknown commands.
+                if isinstance(args, (bytes, bytearray)):
+                    raw_body = args
 
         _LOGGER.debug(
-            "C4 config handle_message: ep=%s cmd=0x%02x args_hex=%s",
+            "C4 config handle_message: ep=%s cmd=0x%02x args=%s",
             self.endpoint.endpoint_id,
             hdr.command_id if hdr else -1,
-            args.hex() if isinstance(args, (bytes, bytearray)) else repr(args),
+            raw_body.hex() if isinstance(raw_body, (bytes, bytearray)) else repr(args),
         )
 
         # cmd 0x00: Read Attributes — device polling for controller identity
@@ -995,38 +1014,41 @@ class C4ConfigCluster(CustomCluster):
             return
 
         # cmd 0x01: Read Attributes Response — pass to super() so
-        # zigpy's read_attributes() future resolves.
+        # zigpy's read_attributes() future resolves. Requires parsed args.
         if hdr.command_id == 0x01:
-            try:
-                return super().handle_message(hdr, args)
-            except Exception as e:
+            if isinstance(args, (bytes, bytearray)):
                 _LOGGER.debug(
-                    "C4 config ep %s: cmd 0x01 base handler: %s",
-                    self.endpoint.endpoint_id, e,
+                    "C4 config ep %s: cmd 0x01 with unparsed body — "
+                    "cannot resolve read_attributes future",
+                    self.endpoint.endpoint_id,
                 )
-                return super().handle_message(hdr, args)
+                return
+            return super().handle_message(hdr, args)
 
-        # cmd 0x0A: Report Attributes — parse and cache
+        # cmd 0x0A: Report Attributes — parse and cache.
         if hdr.command_id == 0x0A:
-            try:
-                remaining = args
-                while remaining:
-                    attr, remaining = foundation.Attribute.deserialize(remaining)
-                    _LOGGER.debug(
-                        "C4 config report: ep=%s attr=0x%04x value=%r",
-                        self.endpoint.endpoint_id, attr.attrid, attr.value.value,
+            if isinstance(args, (bytes, bytearray)):
+                # Schema parse failed earlier — fall back to manual parse.
+                try:
+                    remaining = args
+                    while remaining:
+                        attr, remaining = foundation.Attribute.deserialize(remaining)
+                        _LOGGER.debug(
+                            "C4 config report: ep=%s attr=0x%04x value=%r",
+                            self.endpoint.endpoint_id, attr.attrid, attr.value.value,
+                        )
+                        self._update_attribute(attr.attrid, attr.value.value)
+                except Exception as e:
+                    _LOGGER.warning(
+                        "C4 config: Report Attributes parse failed on ep %s: %s",
+                        self.endpoint.endpoint_id, e,
                     )
-                    self._update_attribute(attr.attrid, attr.value.value)
-            except Exception as e:
-                _LOGGER.warning(
-                    "C4 config: Report Attributes parse failed on ep %s: %s",
-                    self.endpoint.endpoint_id, e,
-                )
+                return
             return super().handle_message(hdr, args)
 
         # All other C4-proprietary commands — log and discard
         _LOGGER.debug(
             "C4 config ep %s: ignoring unhandled cmd=0x%02x args=%s",
             self.endpoint.endpoint_id, hdr.command_id,
-            args.hex() if isinstance(args, (bytes, bytearray)) else repr(args),
+            raw_body.hex() if isinstance(raw_body, (bytes, bytearray)) else repr(args),
         )
