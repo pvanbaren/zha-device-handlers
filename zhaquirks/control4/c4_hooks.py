@@ -326,6 +326,133 @@ except Exception as e:
 
 
 # ---------------------------------------------------------------------------
+# Patch 3b: zha quirks registry resolve() — the path ZHA 2.x actually uses
+#
+# On the standalone `zha` library (zha>=2.0, HA 2026.x), quirk resolution does
+# NOT go through zigpy.quirks.get_device (Patch 3 above). zha-quirks registers
+# every quirk into the zha DeviceRegistry (exposed as both
+# zhaquirks.ZHA_DEVICE_REGISTRY and zha.quirks.DEVICE_REGISTRY), and ZHA maps a
+# device to its quirk via that registry's resolve() method. The legacy->v2
+# conversion also ignores each CustomDevice's match() override and matches
+# purely on the declared signature, so C4 devices that report unk_model (or
+# don't present a full signature at interview) never map. We wrap resolve()
+# with the same model-map direct-instantiation logic as Patch 3.
+#
+# The resolve-method name varies across versions (zha 2.x: 'resolve';
+# older/zigpy: 'get_device'), so we discover both the registry and the method
+# by duck-typing rather than hard-coding.
+# ---------------------------------------------------------------------------
+try:
+    import zhaquirks as _zhaqpkg
+    try:
+        import zha.quirks as _zhaq
+    except Exception:
+        _zhaq = None
+
+    _RESOLVE_CANDIDATES = ("resolve", "get_device")
+
+    def _c4_find_registry():
+        """Locate the ZHA DeviceRegistry and its resolve-method name.
+
+        Duck-types: the registry is the module attribute exposing register()
+        plus one of _RESOLVE_CANDIDATES ('resolve' on zha 2.x, 'get_device' on
+        older/zigpy). Scans zha-quirks first, then zha.quirks. Returns
+        (dotted_name, obj, resolve_method_name) or (None, None, None) and logs
+        register-only near-misses so we can re-target if the name changes again.
+        """
+        near = []
+        for _mod in (_zhaqpkg, _zhaq):
+            if _mod is None:
+                continue
+            for _nm in dir(_mod):
+                if _nm.startswith("__"):
+                    continue
+                _obj = getattr(_mod, _nm, None)
+                if _obj is None or isinstance(_obj, type):
+                    continue
+                if not callable(getattr(_obj, "register", None)):
+                    continue
+                for _rm in _RESOLVE_CANDIDATES:
+                    if callable(getattr(_obj, _rm, None)):
+                        return f"{_mod.__name__}.{_nm}", _obj, _rm
+                _cbls = [m for m in dir(_obj)
+                         if not m.startswith("_") and callable(getattr(_obj, m, None))]
+                near.append(f"{_mod.__name__}.{_nm} -> {_cbls}")
+        if near:
+            _LOGGER.warning(
+                "C4: no registry resolve method found (tried %s); register-only "
+                "candidates (name -> callables): %s", _RESOLVE_CANDIDATES, near,
+            )
+        return None, None, None
+
+    _reg_name, _ZHA_REG, _resolve_name = _c4_find_registry()
+    if _ZHA_REG is None:
+        raise RuntimeError("could not locate a ZHA device registry resolve method")
+
+    _ZHA_REG_CLS = type(_ZHA_REG)
+
+    if not getattr(_ZHA_REG_CLS, "_c4_resolve_patch", False):
+        _orig_zha_resolve = getattr(_ZHA_REG_CLS, _resolve_name)
+
+        def _c4_zha_resolve(self, device, *args, **kwargs):
+            try:
+                ieee  = str(getattr(device, "ieee", "")).lower()
+                model = getattr(device, "model", None)
+                manuf = getattr(device, "manufacturer", None)
+
+                if ieee.startswith(C4_IEEE_PREFIX):
+                    if not model or model in _INVALID_MODELS:
+                        resolved = get_model_from_ieee(ieee)
+                        if resolved is not None:
+                            model = resolved
+                            _LOGGER.debug(
+                                "C4 zha.resolve: ieee=%s model=%r (from cache)",
+                                ieee, model,
+                            )
+                        else:
+                            _LOGGER.debug(
+                                "C4 zha.resolve: ieee=%s model missing or "
+                                "uninformative", ieee,
+                            )
+
+                    if model and isinstance(model, str):
+                        quirk_cls = _C4_MODEL_QUIRK_MAP.get(model)
+                        if quirk_cls is not None:
+                            device.model = model
+                            device.manufacturer = manuf or "Control4"
+                            _LOGGER.debug(
+                                "C4 zha.resolve: direct-instantiating %s for "
+                                "model=%r ieee=%s",
+                                quirk_cls.__name__, model, ieee,
+                            )
+                            return quirk_cls(
+                                device._application,
+                                device.ieee,
+                                device.nwk,
+                                device,
+                            )
+            except Exception as exc:
+                _LOGGER.error(
+                    "C4 zha.resolve: mapping error, falling back to "
+                    "original: %s", exc,
+                )
+
+            return _orig_zha_resolve(self, device, *args, **kwargs)
+
+        setattr(_ZHA_REG_CLS, _resolve_name, _c4_zha_resolve)
+        _ZHA_REG_CLS._c4_resolve_patch = True
+        _LOGGER.info(
+            "C4: patched %s.%s (class %s)",
+            _reg_name, _resolve_name, _ZHA_REG_CLS.__name__,
+        )
+    else:
+        _LOGGER.debug("C4: zha registry resolve patch already installed")
+
+except Exception as e:
+    _LOGGER.error("C4: Failed to patch zha registry resolve: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Patch 4: ControllerApplication.packet_received — broadcast intercept
 # ---------------------------------------------------------------------------
 try:
