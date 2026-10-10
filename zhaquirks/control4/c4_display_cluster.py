@@ -25,6 +25,7 @@ Cluster ID 0xFC47 is in the ZHA "manufacturer-specific" range (0xFC00..0xFFFF)
 and isn't used by any other Control4 quirk in this codebase.
 """
 
+import json
 import logging
 import os
 import sys
@@ -45,13 +46,39 @@ from zigpy.zcl.foundation import (
     Status as ZCLStatus,
 )
 
+# c4.ln.sl DOES accept item labels appended after the title - 000
+# from the live remote - and then ignores them: the remote asks gi for the
+# items 70 ms later regardless. Off, because the bytes buy nothing and they
+# push the establishing frame to the edge of the ~70-byte ceiling. Kept as a
+# flag rather than deleted so the negative stays visible in the code that
+# would otherwise invite retrying it.
+_C4_SL_CARRIES_ITEMS = False
+
+# The c4.ln.sl title glyph is PER MODEL and comes from c4_helpers'
+# `c4_list_dialect` — SR-250 takes none, SR-260 takes 0x81, both measured off a
+# real director. Do not reintroduce a global default here: it silently breaks
+# whichever model it does not describe.
+
 from c4_helpers import (
     C4_DISPLAY_CLUSTER_ID,
     C4_DISPLAY_DEFAULT_ICON,
+    C4_GAUGE_DEFAULT_LABEL,
+    _c4_send_battery_gauge,
     _c4_send_clear_display,
     _c4_send_display_message,
+    _c4_send_gauge,
     _c4_send_list_header,
+    _c4_send_room_info,
+    _c4_send_setting_frame,
+    _c4_send_slider,
+    c4_current_room,
+    c4_request_beep,
+    c4_setting_frame,
+    sr260_room_for,
+    c4_list_dialect,
 )
+from c4_menu_tree import MenuTree, plain_rows
+from c4_settings_menu import READ_ON_OPEN, Screen, SettingsMenu
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +136,95 @@ class C4SR260DisplayCluster(CustomCluster):
             is_manufacturer_specific=True,
         )
 
+        # Beep the remote until a key is pressed on it (sends c4.zr.fr 01 ff).
+        # Identical on the SR-250 and SR-260, so this needs no dialect entry.
+        # `beep` (0x09) is the same frame with a duration, and 0 stops it.
+        find_remote = ZCLCommandDef(
+            id=0x02,
+            schema={},
+            is_manufacturer_specific=True,
+        )
+
+        # Write the two persistent LCD rows: room title and active source.
+        # This is the ONLY HA-callable path that emits `c4.ln.ri`; before it
+        # existed nothing outside the quirk could touch either row, so an
+        # automation had no way to clear row 2 when it turned a room off.
+        # Writing `display_message: ""` is NOT a substitute - that sends
+        # `c4.ln.le`, which dismisses an overlay and leaves both rows alone.
+        set_room_info = ZCLCommandDef(
+            id=0x03,
+            schema={
+                "room": t.CharacterString,
+                "source": t.CharacterString,
+            },
+            is_manufacturer_specific=True,
+        )
+
+        # Draw the native bar-gauge overlay (sends `c4.ln.sc`) -- the volume
+        # bar a real Control4 director draws. `value` is a PERCENTAGE, 0-100,
+        # because the wire carries max=0x64; it is not a 0..1 fraction and it
+        # is not the ZCL 0..254 level scale. It composites over rows 1/2 and
+        # self-clears, so there is deliberately no matching dismiss command.
+        # Raises for a model with no gauge overlay (the SR-250 has none,
+        # measured) rather than sending a frame it ignores -- see
+        # `_C4_LIST_DIALECT` in c4_helpers.
+        show_gauge = ZCLCommandDef(
+            id=0x04,
+            schema={
+                "value": t.uint8_t,
+                "label": t.CharacterString,
+            },
+            is_manufacturer_specific=True,
+        )
+
+        # Queue a `c4.zr.<verb> <value>` settings write (see
+        # `c4_setting_frame` for the measured verbs). `value` is hex bytes,
+        # e.g. "01" or "5a". Queued, not sent: the remote is sleepy and an
+        # unsolicited push fails NO_ROUTE, so it goes out on the next frame
+        # the remote sends - a keypress or its periodic check-in.
+        set_setting = ZCLCommandDef(
+            id=0x05,
+            schema={
+                "verb": t.CharacterString,
+                "value": t.CharacterString,
+            },
+            is_manufacturer_specific=True,
+        )
+
+        # Queue a `c4.zr.<verb>` read. The reply is logged at INFO by the
+        # button cluster as "C4 setting reply".
+        get_setting = ZCLCommandDef(
+            id=0x06,
+            schema={"verb": t.CharacterString},
+            is_manufacturer_specific=True,
+        )
+
+        # Open the quirk-owned List > Settings menu (Config and About). The
+        # quirk answers every key in it itself; nothing reaches menu_select.
+        show_settings = ZCLCommandDef(
+            id=0x07,
+            schema={},
+            is_manufacturer_specific=True,
+        )
+
+        # Open an HA-defined List menu (JSON tree, see c4_menu_tree). The quirk
+        # navigates it; a leaf's action comes back as a `menu_action` event.
+        # `menu` may carry "path" and "selected" to reopen where a pick was.
+        show_menu = ZCLCommandDef(
+            id=0x08,
+            schema={"menu": t.LongCharacterString},
+            is_manufacturer_specific=True,
+        )
+
+        # Beep for `seconds` (1-254), 255 until a key is pressed, 0 to stop:
+        # Composer's Beep and Stop Beep. A separate id so find_remote keeps
+        # its empty schema for the automations that call it.
+        beep = ZCLCommandDef(
+            id=0x09,
+            schema={"seconds": t.uint8_t},
+            is_manufacturer_specific=True,
+        )
+
     # ------------------------------------------------------------------
     # Per-device active-menu state
     # ------------------------------------------------------------------
@@ -119,7 +235,7 @@ class C4SR260DisplayCluster(CustomCluster):
     # remote pages through the items, and cleared by close_list / by a
     # Select-on-list event.
     _active_menu: dict | None = None
-    _next_list_id: int = 0  # rolls 1..0xFFFF, never 0 (0 means "no list")
+    _next_list_id: int = 0  # rolls 2..0xFFFF; see _next_list_id_value
 
     # ------------------------------------------------------------------
     # Startup — seed default + push current value to the LCD
@@ -295,10 +411,15 @@ class C4SR260DisplayCluster(CustomCluster):
     # ------------------------------------------------------------------
 
     def _next_list_id_value(self) -> int:
-        """Return a non-zero 16-bit list id (`0` means "no list" on the wire)."""
+        """Return a 16-bit list id, never 0 or 1 (`0` means "no list").
+
+        1 is skipped: on the SR-260, list 0x0001 draws its first row centered
+        instead of left-aligned. It surfaces as "the first list after an HA
+        restart is indented", because the counter restarts at 1. No director
+        capture has ever used id 1.
+        """
         nxt = (self._next_list_id + 1) & 0xFFFF
-        if nxt == 0:
-            nxt = 1
+        nxt = max(nxt, 2)
         # Use a writable instance attribute (the class attribute is just the
         # initial value; subsequent writes shadow it on the instance).
         self._next_list_id = nxt
@@ -354,6 +475,8 @@ class C4SR260DisplayCluster(CustomCluster):
                 count=len(items_list),
                 sel_idx=sel,
                 title=title_str,
+                icon=c4_list_dialect(device)["title_icon"],
+                items=items_list if _C4_SL_CARRIES_ITEMS else None,
             )
             _LOGGER.info(
                 "C4 display [%s]: show_list id=0x%04X items=%d sel=%d title=%r",
@@ -380,6 +503,104 @@ class C4SR260DisplayCluster(CustomCluster):
             self._active_menu = None
             raise
 
+    async def find_remote(self):
+        """Beep the remote until a key is pressed on it (`c4.zr.fr 01 ff`)."""
+        await self.beep(0xFF)
+
+    async def beep(self, seconds):
+        """Beep for `seconds`, 0xFF until a key press, 0 to stop (`c4.zr.fr`).
+
+        A remote that is asleep - the normal case for one that is lost - gets
+        the beep after its next check-in instead; see `c4_request_beep`.
+        """
+        device = self.endpoint.device
+        try:
+            if await c4_request_beep(device, int(seconds)):
+                _LOGGER.info("C4 display [%s]: beep %s", device.ieee, seconds)
+        except Exception:
+            _LOGGER.warning("C4 display: beep send failed", exc_info=True)
+
+    async def set_room_info(self, room, source):
+        """Write the two persistent LCD rows (`c4.ln.ri`).
+
+        Row 1 is the room title, row 2 the active source. Pass `source=""` to
+        show the room as off - that is what a real director sends, and it is
+        the only way to clear row 2, since `c4.ln.le` dismisses overlays and
+        does not touch the rows.
+
+        An empty `room` falls back to whatever was last cached for this device
+        rather than blanking row 1, because `_c4_send_room_info` refuses to
+        cache an empty room and a caller that omits it almost always means
+        "leave the room alone, I only care about the source".
+        """
+        device = self.endpoint.device
+        room_s = room or c4_current_room(device) or sr260_room_for(device, "")
+        if not room_s:
+            # The room is only learned at bootstrap, so a dashboard route soon
+            # after an HA restart has none. Sending would blank row 1; caching
+            # the source lets the next bootstrap draw both rows instead.
+            device._c4_source = source or ""
+            _LOGGER.info(
+                "C4 display [%s]: set_room_info deferred to bootstrap, "
+                "no room known yet (source=%r)", device.ieee, source or "",
+            )
+            return
+        try:
+            await _c4_send_room_info(device, room_s, source or "")
+            _LOGGER.info(
+                "C4 display [%s]: set_room_info room=%r source=%r",
+                device.ieee, room_s, source or "",
+            )
+        except zigpy.exceptions.DeliveryError as e:
+            # Same reasoning as find_remote: a sleeping remote is ordinary,
+            # and an automation that turned a room off must not report a
+            # failure because the LCD update did not land.
+            _LOGGER.warning(
+                "C4 display [%s]: set_room_info undelivered (%s) - "
+                "remote likely asleep",
+                device.ieee, e,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "C4 display: set_room_info send failed", exc_info=True,
+            )
+
+    async def show_gauge(self, value, label):
+        """Draw the native bar-gauge overlay (`c4.ln.sc`).
+
+        `value` is a percentage, 0-100 -- see the command definition. An empty
+        `label` falls back to "Volume", which is what the director sends.
+
+        Deliberately does NOT push `c4.ln.le` afterwards: `sc` self-clears, the
+        director sends no dismissal, and `le` would tear down an open list.
+        """
+        device = self.endpoint.device
+        try:
+            await _c4_send_gauge(device, value, label or C4_GAUGE_DEFAULT_LABEL)
+            _LOGGER.info(
+                "C4 display [%s]: show_gauge value=%s label=%r",
+                device.ieee, value, label or C4_GAUGE_DEFAULT_LABEL,
+            )
+        except ValueError as e:
+            # An unmeasured model. Loud, because this one IS a real
+            # misconfiguration rather than a sleepy radio -- but still not
+            # raised, so a volume automation never fails on its LCD step.
+            _LOGGER.warning("C4 display [%s]: show_gauge - %s", device.ieee, e)
+        except zigpy.exceptions.DeliveryError as e:
+            # Same reasoning as find_remote / set_room_info: a sleeping remote
+            # is ordinary. It matters more here than anywhere else, because
+            # this fires on every volume tick and must never turn a volume
+            # press into a failed automation.
+            _LOGGER.debug(
+                "C4 display [%s]: show_gauge undelivered (%s) - "
+                "remote likely asleep",
+                device.ieee, e,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "C4 display: show_gauge send failed", exc_info=True,
+            )
+
     async def close_list(self):
         """Dismiss the active menu (sends `c4.ln.le`)."""
         device = self.endpoint.device
@@ -399,3 +620,220 @@ class C4SR260DisplayCluster(CustomCluster):
             _LOGGER.warning(
                 "C4 display: close_list send failed", exc_info=True,
             )
+
+    # ------------------------------------------------------------------
+    # c4.zr.* settings - queued until the remote is awake
+    # ------------------------------------------------------------------
+
+    def _queue_setting(self, verb, value, ns="zr"):
+        device = self.endpoint.device
+        try:
+            seq, text = c4_setting_frame(device, verb, value, ns)
+        except ValueError as e:
+            _LOGGER.warning("C4 display [%s]: %s", device.ieee, e)
+            return
+        if not hasattr(device, "_c4_pending_settings"):
+            device._c4_pending_settings = []
+            device._c4_setting_seqs = set()
+        device._c4_pending_settings.append(text)
+        device._c4_setting_seqs.add(f"{seq:04x}")
+        _LOGGER.info(
+            "C4 display [%s]: queued %r until the remote wakes",
+            device.ieee, text,
+        )
+
+    async def set_setting(self, verb, value):
+        """Queue a `c4.zr` setting write for the remote's next wake."""
+        self._queue_setting(verb, value)
+
+    async def get_setting(self, verb):
+        """Queue a `c4.zr` setting read for the remote's next wake."""
+        self._queue_setting(verb, None)
+
+    async def flush_pending_settings(self):
+        """Send every queued settings frame, in order. Called on wake."""
+        device = self.endpoint.device
+        pending = getattr(device, "_c4_pending_settings", None)
+        # Every inbound frame schedules a flush, so they can overlap.
+        if not pending or getattr(device, "_c4_settings_flushing", False):
+            return
+        device._c4_settings_flushing = True
+        try:
+            await self._flush_settings(device, pending)
+        finally:
+            device._c4_settings_flushing = False
+
+    async def _flush_settings(self, device, pending):
+        while pending:
+            text = pending[0]
+            try:
+                await _c4_send_setting_frame(device, text)
+            except Exception as e:
+                # Leave it queued for the next wake rather than dropping it.
+                _LOGGER.warning(
+                    "C4 display [%s]: setting %r undelivered (%s); "
+                    "will retry on next wake",
+                    device.ieee, text, e,
+                )
+                return
+            pending.pop(0)
+
+    # ------------------------------------------------------------------
+    # List > Settings - drawn and answered entirely by the quirk
+    # ------------------------------------------------------------------
+    # `_active_menu["owner"] == "settings"` routes the remote's is / lb / cn /
+    # cs frames here instead of to menu_select (see C4RemoteButtonCluster).
+    # While a slider or gauge is up, `_settings_overlay` holds its label so
+    # whichever key closes it returns to the list it was opened from.
+
+    def _new_settings_menu(self):
+        device = self.endpoint.device
+        if not hasattr(device, "_c4_settings"):
+            device._c4_settings = {}
+        return SettingsMenu(
+            device._c4_settings,
+            about=lambda: self._about_rows(device),
+            battery=lambda: self._battery_percent(device),
+        )
+
+    async def _refresh_settings_cache(self):
+        # List was just pressed, so the remote is listening: refresh the
+        # check marks now, before the user reaches a submenu.
+        for verb in READ_ON_OPEN:
+            self._queue_setting(verb, None)
+        self._queue_setting("fwv", None, ns="sy")
+        await self.flush_pending_settings()
+
+    async def show_settings(self):
+        """Open the quirk-owned Settings menu on the remote."""
+        menu = self._new_settings_menu()
+        self._settings_menu = menu
+        self._settings_overlay = None
+        await self._draw_settings(menu.open())
+        await self._refresh_settings_cache()
+
+    async def show_menu(self, menu):
+        """Push an HA-supplied menu tree (JSON) to the remote."""
+        device = self.endpoint.device
+        text = str(menu or "{}")
+        # "json:" stops HA's template engine re-parsing the tree into a mapping.
+        if text.startswith("json:"):
+            text = text[5:]
+        try:
+            tree = json.loads(text)
+        except ValueError as e:
+            _LOGGER.warning("C4 display [%s]: show_menu bad JSON (%s)", device.ieee, e)
+            return
+        if not isinstance(tree, dict):
+            _LOGGER.warning("C4 display [%s]: show_menu wants an object", device.ieee)
+            return
+        engine = MenuTree(tree, self._new_settings_menu)
+        self._settings_menu = engine
+        self._settings_overlay = None
+        await self._draw_settings(engine.open(tree.get("path"), tree.get("selected")))
+        # The cache feeds only the Settings subtree, whose reads are SR-260
+        # verbs, so a tree without one (the SR-250's) reads nothing.
+        if not tree.get("path") and any(
+            isinstance(c, dict) and c.get("settings") for c in tree.get("items") or []
+        ):
+            await self._refresh_settings_cache()
+
+    @staticmethod
+    def _battery_percent(device):
+        """`c4.zr.bl` (what the director's gauge shows), else the status report."""
+        try:
+            return int(getattr(device, "_c4_settings", {})["bl"], 16)
+        except (KeyError, TypeError, ValueError):
+            return getattr(device, "_c4_battery", None)
+
+    @staticmethod
+    def _about_rows(device):
+        ieee = str(getattr(device, "ieee", "")).replace(":", "")
+        firmware = getattr(device, "_c4_settings", {}).get("fwv") or "unknown"
+        return [
+            ("Controller:", "Home Assistant"),
+            ("Firmware version:", firmware),
+            ("MAC address:", ieee),
+        ]
+
+    async def settings_event(self, kind, list_id, index):
+        """Handle a key the remote reported while a quirk-owned menu was up.
+
+        Returns the picked leaf as a Screen of kind "action", for the button
+        cluster to fire as `menu_action`; otherwise None.
+        """
+        menu = getattr(self, "_settings_menu", None)
+        if menu is None:
+            return None
+        overlay = getattr(self, "_settings_overlay", None)
+        if overlay is not None:
+            # cs (Select), cn (Cancel) or lb (Back) all leave a slider or gauge.
+            if kind in ("cs", "cn", "lb"):
+                self._settings_overlay = None
+                await self._draw_settings(menu.resume(overlay))
+            return
+        active = self._active_menu or {}
+        if list_id != active.get("list_id"):
+            return  # a late frame for a list we have already replaced
+        if kind == "is":
+            screen = menu.select(index)
+        elif kind == "lb":
+            screen = menu.back()
+        elif kind == "cn":
+            screen = Screen("close")
+        else:
+            return None
+        if screen is not None and screen.kind == "action":
+            # The director leaves the list up after a leaf runs; HA redraws it.
+            return screen
+        if screen is not None:
+            await self._draw_settings(screen)
+        return None
+
+    async def _draw_settings(self, screen):
+        device = self.endpoint.device
+        try:
+            if screen.write is not None:
+                verb, value = screen.write
+                self._queue_setting(verb, value)
+                self._queue_setting(verb, None)  # read back: the remote may refuse
+                await self.flush_pending_settings()
+            if screen.kind == "list":
+                list_id = self._next_list_id_value()
+                self._active_menu = {
+                    "list_id": list_id,
+                    "title": screen.title,
+                    "items": plain_rows(screen.items)
+                    if c4_list_dialect(device)["item_icon"] is None else screen.items,
+                    "selected_index": screen.selected,
+                    "owner": "settings",
+                }
+                await _c4_send_list_header(
+                    device,
+                    list_id=list_id,
+                    count=len(screen.items),
+                    sel_idx=screen.selected,
+                    title=screen.title,
+                    icon=c4_list_dialect(device)["title_icon"],
+                )
+            elif screen.kind == "slider":
+                self._settings_overlay = screen.title
+                await _c4_send_slider(device, screen.slider_id, screen.title)
+            elif screen.kind == "gauge":
+                self._settings_overlay = screen.title
+                await _c4_send_battery_gauge(device, screen.value)
+            else:
+                self._active_menu = None
+                self._settings_menu = None
+                self._settings_overlay = None
+                await _c4_send_clear_display(device)
+            _LOGGER.info(
+                "C4 display [%s]: settings %s %r", device.ieee, screen.kind,
+                screen.title,
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "C4 display [%s]: settings %s undelivered (%s)",
+                device.ieee, screen.kind, e,
+            )
+

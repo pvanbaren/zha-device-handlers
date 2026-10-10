@@ -50,12 +50,24 @@ from c4_helpers import (
     SR260_BUTTON_MAP,
     _c4_send_clear_display,
     _c4_send_list_items_response,
+    c4_list_dialect,
+    c4_parse_setting_reply,
+    c4_current_room,
+    sr260_room_for,
+    _c4_answer_motion_wake,
     _c4_send_room_info,
     _sync_ep1_level,
     _sync_ep1_onoff,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Fallback room title for the SR-260's LCD, used only when a menu selection
+# lands BEFORE the first bootstrap has seeded `device._c4_room` - otherwise a
+# selection would send `ri "" "<source>"` and blank the room line.
+#
+# Must stay in lockstep with DEFAULT_ROOM in control4_remote.py.
+SR260_DEFAULT_ROOM = "Living Room"
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +683,16 @@ class C4RemoteButtonCluster(C4ButtonCluster):
         if raw_bytes is not None:
             text = raw_bytes.decode("ascii", errors="replace").strip()
             cmd = text.split()
+            device = self.endpoint.device
+            # The base parser drops short `0r` acks, so log replies to our
+            # settings frames here, where `e00` and `000` are both visible.
+            if (
+                cmd
+                and cmd[0].startswith("0r")
+                and cmd[0][2:] in getattr(device, "_c4_setting_seqs", ())
+            ):
+                _LOGGER.info("C4 setting reply [%s]: %r", device.ieee, text)
+                self._record_setting_reply(text)
             if (
                 len(cmd) >= 5
                 and cmd[0].startswith("0i")
@@ -720,8 +742,19 @@ class C4RemoteButtonCluster(C4ButtonCluster):
         slice_end = offset + count if count else len(items_all)
         items = items_all[offset:slice_end]
         try:
+            # Explicit, not defaulted: the list dialect differs per model
+            # (see c4_list_dialect), so a default silently breaks one of them.
+            _dialect = c4_list_dialect(self.endpoint.device)
             await _c4_send_list_items_response(
                 self.endpoint.device, seq, items,
+                # NOT self.endpoint.endpoint_id. This cluster lives on EP 197
+                # because that is where a gi ARRIVES; the reply must go to EP 1.
+                # See the reply_ep note in c4_helpers for the captured bytes.
+                endpoint=_dialect["reply_ep"],
+                # Settings items carry their own glyph (submenu / check mark).
+                icon=(None if menu.get("owner") == "settings"
+                      else _dialect["item_icon"]),
+                form=_dialect["gi_form"],
             )
         except Exception:
             _LOGGER.warning(
@@ -734,15 +767,79 @@ class C4RemoteButtonCluster(C4ButtonCluster):
             return None
         return ep1.in_clusters.get(C4_DISPLAY_CLUSTER_ID)
 
+    def _record_setting_reply(self, text: str) -> None:
+        """Cache a settings value the remote reported and announce it."""
+        parsed = c4_parse_setting_reply(text)
+        if parsed is None:
+            return
+        _seq, status, verb, value = parsed
+        device = self.endpoint.device
+        if verb and status == "000":
+            if not hasattr(device, "_c4_settings"):
+                device._c4_settings = {}
+            device._c4_settings[verb] = value
+        if verb:
+            self.listener_event(
+                "zha_send_event",
+                "setting_value",
+                {"setting": verb, "value": value, "status": status,
+                 ENDPOINT_ID: self.endpoint.endpoint_id},
+            )
+
+    def _settings_menu_display(self):
+        """Return the display cluster, if the quirk's own Settings menu is up."""
+        display = self._get_display_cluster()
+        menu = getattr(display, "_active_menu", None) if display else None
+        if menu and menu.get("owner") == "settings":
+            return display
+        return None
+
+    async def _quirk_menu_key(self, display, kind, list_id, index) -> None:
+        picked = await display.settings_event(kind, list_id, index)
+        if picked is None:
+            return
+        self.listener_event(
+            "zha_send_event",
+            "menu_action",
+            {"action": picked.action, "label": picked.title,
+             "path": picked.path, "selected_index": picked.selected,
+             ENDPOINT_ID: self.endpoint.endpoint_id},
+        )
+        _LOGGER.info(
+            "C4 SR260: menu_action %r (%r at %r)",
+            picked.action, picked.title, picked.path,
+        )
+
     def _handle_state_announcement(self, namespace, data):
+        if namespace in (
+            "c4.ln.is", "c4.ln.ise", "c4.ln.ish", "c4.ln.lb", "c4.ln.cn",
+            "c4.ln.cc", "c4.ln.cs",
+        ):
+            display = self._settings_menu_display()
+            if display is not None:
+                # Owned by the quirk: answer it here and fire no menu_select,
+                # so no automation's menu dispatcher acts on a Settings pick.
+                kind = namespace.rsplit(".", 1)[1]
+                if kind in ("is", "lb", "cn", "cs"):
+                    asyncio.ensure_future(self._quirk_menu_key(
+                        display, kind, self._parse_hex(data, 0),
+                        self._parse_hex(data, 1),
+                    ))
+                return
         if namespace == "c4.zr.bb" and data:
             self._fire_button_event(data[0], SHORT_PRESS)
         elif namespace == "c4.zr.bh" and data:
             # Button-hold: SR260 re-sends `c4.zr.bh <btn> 0000 0000` every
-            # ~100ms while a button is held down (after the initial bb).
+            # ~501 ms while a button is held down (after the initial bb).
+            # Measured off the remote's own hold counter (the 4th bb/bh/be
+            # field, in ms): 418, 1420, 1921, 2422, 2923. Retransmits are
+            # ~16 ms apart. Same ~2 Hz as the SR-250.
             # Fire LONG_PRESS per message so HA automations can auto-repeat
-            # their action — e.g. volume_up bumps the volume on every tick.
-            self._fire_button_event(data[0], LONG_PRESS)
+            # their action. hold_ms rides along because 2 Hz is too slow on
+            # its own: a director accelerates a held volume key with it.
+            self._fire_button_event(
+                data[0], LONG_PRESS, hold_ms=self._parse_hex(data, 3),
+            )
         elif namespace == "c4.zr.be" and data:
             self._fire_button_event(data[0], SHORT_RELEASE)
         elif namespace == "c4.ln.is" and data:
@@ -787,8 +884,14 @@ class C4RemoteButtonCluster(C4ButtonCluster):
                 "C4 SR260 [%s]: motion_wake fired",
                 self.endpoint.device.ieee,
             )
+            asyncio.ensure_future(_c4_answer_motion_wake(
+                self.endpoint.device,
+                sr260_room_for(self.endpoint.device, SR260_DEFAULT_ROOM),
+            ))
         elif namespace == "c4.zr.bl":
-            _LOGGER.debug("C4 SR260: backlight event %s", data)
+            # Battery percent, not backlight: the director draws exactly the
+            # bl it just read on its Battery Level gauge.
+            _LOGGER.debug("C4 SR260: battery event %s", data)
         elif namespace.startswith("c4.ln.") or namespace in (
             "c4.zr.tm", "c4.zr.loc",
         ):
@@ -893,10 +996,16 @@ class C4RemoteButtonCluster(C4ButtonCluster):
         asyncio.ensure_future(self._clear_lcd_after_select())
 
     async def _show_selection_and_close(self, item: str) -> None:
-        """Push `ri "<item>" ""` then `le` to dismiss the list."""
+        """Push `ri "<room>" "<item>"` then `le` to dismiss the list."""
         device = self.endpoint.device
         try:
-            await _c4_send_room_info(device, item, "")
+            # Field 1 is the room title and field 2 the active source; a
+            # director sends `ri "Living Room" "Media Player"`. Sending
+            # `ri "<item>" ""` put the source in the room line and blanked
+            # row 2. `c4_current_room` remembers what the bootstrap sent.
+            await _c4_send_room_info(
+                device, c4_current_room(device, sr260_room_for(device, SR260_DEFAULT_ROOM)), item,
+            )
         except Exception:
             _LOGGER.debug(
                 "C4 SR260: post-select c4.ln.ri send failed", exc_info=True,
@@ -916,7 +1025,9 @@ class C4RemoteButtonCluster(C4ButtonCluster):
                 "C4 SR260: post-select c4.ln.le send failed", exc_info=True,
             )
 
-    def _fire_button_event(self, button_hex: str, action: str) -> None:
+    def _fire_button_event(
+        self, button_hex: str, action: str, hold_ms: int | None = None,
+    ) -> None:
         try:
             button_id = int(button_hex, 16)
         except (ValueError, TypeError):
@@ -948,10 +1059,10 @@ class C4RemoteButtonCluster(C4ButtonCluster):
             return
 
         button_name = SR260_BUTTON_MAP.get(button_id, f"button_{button_id:#04x}")
-        btn_cluster.listener_event(
-            "zha_send_event", action,
-            {BUTTON: button_name, ENDPOINT_ID: ep_id},
-        )
+        args = {BUTTON: button_name, ENDPOINT_ID: ep_id}
+        if hold_ms is not None:
+            args["hold_ms"] = hold_ms
+        btn_cluster.listener_event("zha_send_event", action, args)
         _LOGGER.debug(
             "C4 SR260: fired %r for %s on EP %d", action, button_name, ep_id,
         )

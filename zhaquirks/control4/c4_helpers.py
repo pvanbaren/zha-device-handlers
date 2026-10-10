@@ -6,17 +6,21 @@ Shared clusters defined here (used by 2+ device files):
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import os
+import re
 import struct
 import sys
+import time
 
 # Make this directory importable by sibling modules regardless of load order.
 _QUIRK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _QUIRK_DIR not in sys.path:
     sys.path.insert(0, _QUIRK_DIR)
 
+import zigpy.exceptions
 from zigpy.quirks import CustomCluster
 from zigpy.zcl import foundation
 from zigpy.zcl.foundation import Status as ZCLStatus
@@ -79,6 +83,12 @@ C4_PROVISION_DELAY = 0.05  # seconds
 C4_ATTR_DIM_LEVEL = 0x0000
 C4_ATTR_MODEL     = 0x0007
 C4_ATTR_FIRMWARE  = 0x0004
+# Increments once per power cycle; unmoved by a network rejoin or a factory
+# reset. Decoded from a 0xC25D status-report capture.
+C4_ATTR_POWER_CYCLE_COUNT = 0x0006
+# The controller's address as the remote holds it: `02 00 00` once
+# provisioned, zero-length while it has none.
+C4_ATTR_CONTROLLER_ADDR = 0x0012
 
 # ---------------------------------------------------------------------------
 # C4 endpoint interview defaults (injected instead of Simple_Desc_req)
@@ -403,6 +413,263 @@ async def _c4_send_clear_display(device) -> None:
     )
 
 
+async def _c4_send_find_remote(device, seconds: int = 0xFF) -> None:
+    """Beep the remote: `0i<seq> c4.zr.fr 01 <seconds>` at EP 1.
+
+    MEASURED on both models (`01 ff`) and on the SR-260 for every duration
+    Composer offers, each acked `000`:
+
+        01 ff   beep until a key is pressed on the remote (Find Remote)
+        01 0a   beep for 10 s
+        01 1e   beep for 30 s
+        01 00   stop beeping (Composer's "Stop Beep")
+
+    So the last byte is a duration in seconds, 0xFF meaning "until a key",
+    and 0 is the stop command. A key press cancels any of them on its own.
+    The leading `01` never varied.
+    """
+    seq = next_c4_seq(device)
+    cmd = f"0i{seq:04x} c4.zr.fr 01 {max(0, min(int(seconds), 0xFF)):02x}"
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.info(
+        "C4: send find-remote %d bytes: %r", len(data), bytes(data),
+    )
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
+# A lost remote is an asleep one, and a send to a sleeping remote fails with
+# MAC_NO_ACK. So a beep that does not land is held on the device and re-sent
+# right after its next check-in (~60 s) or pickup, the moments it is known to
+# be awake. The TTL stops a remote that was flat or out of range from starting
+# to beep hours after anyone asked.
+C4_PENDING_BEEP_TTL_S = 600.0
+
+
+async def c4_request_beep(device, seconds: int = 0xFF) -> bool:
+    """Beep now if the remote is awake, else hold it for the next wake.
+
+    Returns True if delivered now. A stop (0) is never held: a remote that is
+    asleep is not beeping, and the stop still cancels a held beep.
+    """
+    device._c4_pending_beep = None
+    try:
+        await _c4_send_find_remote(device, seconds)
+        return True
+    except zigpy.exceptions.DeliveryError as exc:
+        if seconds:
+            device._c4_pending_beep = (int(seconds), time.monotonic())
+            _LOGGER.info(
+                "C4 [%s]: beep %s held for the next wake (%s)",
+                device.ieee, seconds, exc,
+            )
+        return False
+
+
+async def c4_flush_pending_beep(device) -> None:
+    """Send a held beep, if any. Call only when the remote has just spoken."""
+    pending = getattr(device, "_c4_pending_beep", None)
+    if pending is None:
+        return
+    seconds, since = pending
+    if time.monotonic() - since > C4_PENDING_BEEP_TTL_S:
+        device._c4_pending_beep = None
+        _LOGGER.warning("C4 [%s]: held beep expired undelivered", device.ieee)
+        return
+    try:
+        await _c4_send_find_remote(device, seconds)
+    except Exception as exc:  # still asleep, or busy: stay held for the next wake
+        _LOGGER.info("C4 [%s]: held beep still undelivered (%s)", device.ieee, exc)
+        return
+    if getattr(device, "_c4_pending_beep", None) is pending:
+        device._c4_pending_beep = None
+    _LOGGER.info(
+        "C4 [%s]: held beep delivered after %.0f s",
+        device.ieee, time.monotonic() - since,
+    )
+
+
+# `c4.zr.*` remote settings, as Composer's SR-260 Properties page sends them:
+# `0s<seq> c4.zr.<verb> <hex>` to set, `0g<seq> c4.zr.<verb>` to read; the
+# remote answers a read with `0r<seq> 000 c4.zr.<verb> <hex>`. Measured
+# off a director-paired SR-260 (blb screen %, kbl keypad %, ls light
+# sensor, st awake s, ast check-in s, wom wake-on-motion, bt recharge station,
+# tc RGB332 text colour). The verb and value are validated rather than passed
+# through, so a typo cannot put an arbitrary frame on the air.
+_C4_SETTING_VERB = re.compile(r"[a-z]{1,6}")
+_C4_SETTING_VALUE = re.compile(r"[0-9a-f]{2}( [0-9a-f]{2}){0,3}")
+
+
+def c4_setting_frame(device, verb: str, value: str | None = None, ns: str = "zr"):
+    """Build a `0s` (value given) or `0g` (value None) settings frame.
+
+    `ns` is `zr` for remote settings or `sy` for system reads (`c4.sy.fwv`).
+    Returns `(seq, text)`. Raises ValueError on a malformed verb or value.
+    """
+    verb = (verb or "").strip().lower()
+    if ns not in ("zr", "sy") or not _C4_SETTING_VERB.fullmatch(verb):
+        raise ValueError(f"c4.{ns} setting: bad verb {verb!r}")
+    seq = next_c4_seq(device)
+    if value is None:
+        return seq, f"0g{seq:04x} c4.{ns}.{verb}"
+    value = value.strip().lower()
+    if not _C4_SETTING_VALUE.fullmatch(value):
+        raise ValueError(f"c4.{ns}.{verb}: bad value {value!r} (want hex bytes)")
+    return seq, f"0s{seq:04x} c4.{ns}.{verb} {value}"
+
+
+async def _c4_send_setting_frame(device, text: str) -> None:
+    """Send a frame from `c4_setting_frame` at EP 1 -> 1, like `c4.zr.fr`."""
+    _LOGGER.info("C4: send setting %r", text)
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=_build_c4_frame(0, text),
+        expect_reply=False,
+    )
+
+# A reply to one of our reads: `0r<seq> 000 c4.zr.<verb> <hex>`, or `e00` when
+# the remote refuses (the SR-250 for `ast`/`ls`, the SR-260 for a `bt` change
+# it rejects). `c4.sy.fwv` replies with a dotted version, hence `\S+`.
+_C4_SETTING_REPLY = re.compile(
+    r"0r([0-9a-f]{4}) ([0-9a-z]{3})(?: c4\.(zr|sy)\.([a-z]+)((?: \S+)*))?"
+)
+
+
+def c4_parse_setting_reply(text: str):
+    """Parse a settings reply into `(seq, status, verb, value)`, or None.
+
+    `verb` and `value` are None for a bare ack (a write's `000`, or `e00`).
+    """
+    # The SR-260's c4.sy.fwv reply arrives as "...2.2.50\r\n\x00\x00".
+    m = _C4_SETTING_REPLY.fullmatch((text or "").replace("\x00", "").strip())
+    if not m:
+        return None
+    seq, status, _ns, verb, value = m.groups()
+    return seq, status, verb, (value.strip() if verb else None)
+
+
+# The 0xC25D status report a remote sends about hourly carries battery as
+# attribute 0x0015 (int8, percent), right after 0x0013 and 0x0014. Anchored on
+# all three so a stray 0x15 byte elsewhere in the frame cannot match. Only a
+# fallback: it ran 93-100 while the director's gauge said 90-91, and the gauge
+# is `c4.zr.bl`, read live.
+_C4_STATUS_BATTERY = re.compile(
+    rb"\x13\x00\x28.\x14\x00\x20.\x15\x00\x28(.)", re.DOTALL,
+)
+
+
+def c4_battery_from_status(msg: bytes):
+    """Battery percent from a 0xC25D status report, or None."""
+    m = _C4_STATUS_BATTERY.search(bytes(msg or b""))
+    if not m:
+        return None
+    pct = m.group(1)[0]
+    return pct if 0 <= pct <= 100 else None
+
+
+async def _c4_send_slider(device, slider_id: int, title: str) -> None:
+    """Open the remote's own level slider: `0i<seq> c4.ln.slc 04 <id> "<title>"`.
+
+    The remote applies and stores the level itself, so nothing is written
+    afterwards. Measured: id 00 is Display Brightness, 01 Keypad Brightness.
+    """
+    seq = next_c4_seq(device)
+    safe = str(title).replace("\r", " ").replace("\n", " ").replace('"', "")
+    await _c4_send_raw(device, f'0i{seq:04x} c4.ln.slc 04 {slider_id:02x} "{safe}"')
+
+
+async def _c4_send_battery_gauge(device, percent: int) -> None:
+    """Draw the battery screen: `0i<seq> c4.ln.sc 64 00 64 <pct> "Battery Level"`.
+
+    A different flag (0x64) and a two-digit minimum from the volume bar's
+    `0a 0 64`, exactly as the director sent it.
+    """
+    pct = max(0, min(100, int(percent)))
+    seq = next_c4_seq(device)
+    await _c4_send_raw(device, f'0i{seq:04x} c4.ln.sc 64 00 64 {pct:02x} "Battery Level"')
+
+
+C4_GAUGE_DEFAULT_LABEL = "Volume"
+
+
+async def _c4_send_gauge(
+    device, value: int, label: str = C4_GAUGE_DEFAULT_LABEL,
+) -> None:
+    r"""Draw the remote's native bar-gauge overlay via `c4.ln.sc`.
+
+    Sends `0i<seq> c4.ln.sc <flag> <min> <max> <value> "<label>"\r\n` at
+    EP 1 -> 1, the same transport and `0i` family as `c4.ln.dm` / `c4.ln.le`.
+    The remote acks `0r<seq> 000`; we do not wait for it.
+
+    This is the volume bar a real Control4 director draws, measured off a
+    director-paired SR-260. Two properties that make it the right verb and
+    are easy to assume wrongly:
+
+    * It **composites**. Rows 1 and 2 (`c4.ln.ri`) stay legible underneath, so
+      this does not disturb the room/source the bootstrap owns. `c4.ln.dm`
+      does NOT behave this way -- it replaces the idle screen.
+    * It **self-clears**. Do not follow it with `c4.ln.le`: the director does
+      not, and `le` would tear down an open list if one happened to be up.
+
+    The director sends one `sc` per button frame and nothing at all on mute,
+    so the overlay tracks a level CHANGE rather than a keypress.
+
+    Raises `ValueError` for a model with no gauge form -- the SR-250, which
+    has NO volume overlay at all. See `_C4_LIST_DIALECT`.
+    """
+    gauge = c4_list_dialect(device).get("gauge")
+    if not gauge:
+        raise ValueError(
+            f"c4.ln.sc: no gauge form for model "
+            f"{getattr(device, 'model', None)!r} "
+            f"(the SR-250 has no volume overlay)"
+        )
+
+    lo, hi = gauge["minimum"], gauge["maximum"]
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"c4.ln.sc: value {value!r} is not an integer") from None
+    value = max(lo, min(hi, value))
+
+    # Same framing hazards as every other quoted C4 arg.
+    sanitised = (
+        str(label).replace("\r", " ").replace("\n", " ").replace('"', "")
+    )
+
+    seq = next_c4_seq(device)
+    # Field widths reproduce the captured bytes exactly: flag zero-padded to
+    # two hex digits, minimum unpadded (it is `0` on the wire), maximum and
+    # value zero-padded to two. `0a 0 64 2d` is what the director sent.
+    cmd = (
+        f'0i{seq:04x} c4.ln.sc {gauge["flag"]:02x} {lo:x} {hi:02x} '
+        f'{value:02x} "{sanitised}"'
+    )
+    data = _build_c4_frame(seq, cmd)
+
+    _LOGGER.debug(
+        "C4 gauge: send sc value=%d label=%r seq=0x%04x", value, sanitised, seq,
+    )
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1, dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
 async def _c4_send_room_info(device, room: str, source: str = "") -> None:
     """Set the SR260 LCD's room title (row 1) and active source (row 2).
 
@@ -423,12 +690,33 @@ async def _c4_send_room_info(device, room: str, source: str = "") -> None:
     source_s = _sanitise(source)
 
     seq = next_c4_seq(device)
+    # Remember the room so a later selection can refill row 2 without having
+    # to thread the name through every call path. MEASURED: the director sends
+    # `c4.ln.ri "<room>" "<source>"` - room in field 1, ACTIVE SOURCE in
+    # field 2 - and re-sends it on a source change.
+    if room_s:
+        device._c4_room = room_s
+
+    # The SOURCE is cached UNCONDITIONALLY, including when empty, and that
+    # asymmetry with the room above is deliberate. "" is a real value here - it
+    # is what an off room looks like on row 2 - whereas an empty room is just a
+    # caller with nothing to say, which must not erase a good room name.
+    #
+    # Without this cache row 2 has no owner between writes and is wiped every
+    # few minutes: the remote emits a ZDO Device_annce periodically, that
+    # re-arms the bootstrap latch, and the bootstrap re-sends `ri`. A real
+    # director re-sends `ri "<room>" "<source>"` on EVERY wake with the source
+    # filled in.
+    device._c4_source = source_s
+
     cmd = f'0s{seq:04x} c4.ln.ri "{room_s}" "{source_s}"'
     data = _build_c4_frame(seq, cmd)
 
-    _LOGGER.debug(
-        "C4 display: send ri room=%r source=%r seq=0x%04x",
-        room_s, source_s, seq,
+    # INFO and byte-level, matching the sl and gi send sites: log what goes
+    # on the wire.
+    _LOGGER.info(
+        "C4 display: send ri room=%r source=%r %d bytes: %r",
+        room_s, source_s, len(data), bytes(data),
     )
     await device.request(
         profile=C4_PROFILE_BUTTON,
@@ -442,7 +730,7 @@ async def _c4_send_room_info(device, room: str, source: str = "") -> None:
 
 async def _c4_send_list_header(
     device, list_id: int, count: int, sel_idx: int, title: str,
-    icon: int = 0x81,
+    icon: int | None = 0x81, items=None, item_icon=None,
 ) -> None:
     """Send `0i<seq> c4.ln.sl <list_id> <count> <sel_idx> "<icon><title>"\r\n`.
 
@@ -458,6 +746,15 @@ async def _c4_send_list_header(
     `0x81`, the byte the official Control4 controller uses for the "Watch"
     header — see documentation/control4-sr260-remote-protocol.md).  Same
     glyph table as `c4.ln.dm` / list-item labels.
+
+    `items`, when given, appends the row labels as further quoted strings
+    after the title. The remote accepts this with 000 and then still asks
+    `gi` for the items, so it buys nothing; see `_C4_SL_CARRIES_ITEMS`.
+    Never push items repeatedly from the `gi` handler instead: that is a
+    feedback loop (measured ~50 ms polling, 582 requests in 110 s).
+
+    Callers must keep the whole frame inside the ~70-byte ceiling; with a
+    5-char title and four short labels it lands at ~68.
     """
     if not 0 <= list_id <= 0xFFFF:
         raise ValueError(f"list_id out of range: {list_id}")
@@ -465,7 +762,7 @@ async def _c4_send_list_header(
         raise ValueError(f"count out of range: {count}")
     if not 0 <= sel_idx <= 0xFFFF:
         raise ValueError(f"sel_idx out of range: {sel_idx}")
-    if not 0 <= icon <= 0xFF:
+    if icon is not None and not 0 <= icon <= 0xFF:
         raise ValueError(f"icon out of range: {icon}")
 
     sanitised = (
@@ -475,14 +772,31 @@ async def _c4_send_list_header(
     seq = next_c4_seq(device)
     cmd = (
         f'0i{seq:04x} c4.ln.sl {list_id:04x} {count:04x} {sel_idx:04x} '
-        f'"{chr(icon)}{sanitised}"'
+        f'"{"" if icon is None else chr(icon)}{sanitised}"'
     )
+    if items:
+        _gl = "" if item_icon is None else chr(item_icon & 0xFF)
+        for _it in items:
+            _safe = (
+                str(_it).replace("\r", " ").replace("\n", " ").replace('"', "")
+            )
+            _cand = f'{cmd} "{_gl}{_safe}"'
+            if len(_cand) + 2 > 70:
+                _LOGGER.warning(
+                    "C4 display: sl item %r dropped, frame would be %d bytes",
+                    _it, len(_cand) + 2,
+                )
+                break
+            cmd = _cand
     data = _build_c4_frame(seq, cmd)
 
-    _LOGGER.debug(
-        "C4 display: send sl id=0x%04x count=%d sel=%d icon=0x%02x "
-        "title=%r seq=0x%04x",
-        list_id, count, sel_idx, icon, sanitised, seq,
+    # INFO and byte-level, because this frame establishes the list the whole
+    # gi exchange hangs off. Compare against a real director's:
+    #     0i620f c4.ln.sl 0002 0006 0000 "\x81Watch"\r\n
+    _LOGGER.info(
+        "C4 display: send sl on ep 1->1 profile=0x%04X cluster=0x%04X "
+        "%d bytes: %r",
+        C4_PROFILE_BUTTON, C4_CLUSTER_ID, len(data), bytes(data),
     )
     await device.request(
         profile=C4_PROFILE_BUTTON,
@@ -494,16 +808,128 @@ async def _c4_send_list_header(
     )
 
 
+# --- Per-model list dialect -------------------------------------------------
+#
+# The two remotes do NOT speak the same list grammar, and both halves below are
+# MEASURED off a real Control4 director driving that model:
+#
+#   SR-250   0r<seq> 000 <count> "Media Room" "Media Player" ...
+#            c4.ln.sl 0002 0006 0000 "Watch"
+#            -> explicit per-frame count, NO glyph anywhere
+#
+#   SR-260   0r<seq> 000 "\x01Media Room" "\x01Media Player" ...
+#            c4.ln.sl 0002 0006 0000 "\x81Watch"
+#            -> no count, glyph 0x01 on items and 0x81 on the title
+#
+# Neither dialect may be expressed as a global default: a constant that suits
+# one model silently breaks the other. Select by model, and keep both
+# measurements next to each other so a future edit cannot quietly overwrite
+# one with the other.
+#
+# `reply_ep` is 1 for BOTH models and is not a guess. The endpoint is assigned
+# by DIRECTION, not by request/response: the remote asks from EP 197 and the
+# director answers on EP 1, on both models:
+#   remote -> coordinator  src_ep=197 dst_ep=197  0i081a c4.ln.gi ...
+#   coordinator -> remote  src_ep=1   dst_ep=1    0r081a 000 ...
+# Deriving it from the receiving cluster sends the answer straight back to 197,
+# where the remote silently discards it.
+_C4_LIST_DIALECT = {
+    "SR250": {"gi_form": "count",  "item_icon": None, "title_icon": None, "reply_ep": 1,
+              # MEASURED: THE SR-250 HAS NO VOLUME OVERLAY. A director-paired
+              # SR-250B was re-roomed (from the remote) into a room where an
+              # SR-260 draws the bar; its volume keys moved the volume with no
+              # bar on any source. Same room, director and binding, so the only
+              # remaining variable was the model.
+              #
+              # So None here means "this model does not have the feature", and
+              # `_c4_send_gauge` refuses. Do NOT fill it in with the SR-260
+              # form: it would put frames on the air that nothing renders.
+              "gauge": None},
+    "SR260": {"gi_form": "status", "item_icon": 0x01, "title_icon": 0x81, "reply_ep": 1,
+              # MEASURED, 27 frames, all identical in shape:
+              #   0ib593 c4.ln.sc 0a 0 64 2d "Volume"
+              # `0x64` = 100, so the value is a percentage. `flag` 0x0a was
+              # constant across every frame, so its meaning is UNKNOWN -- icon,
+              # control id and step all still fit. Do not document it as one.
+              "gauge": {"flag": 0x0A, "minimum": 0, "maximum": 100}},
+}
+# The SR-260 is the safer fallback for an unknown model: it is the dialect the
+# protocol documentation describes, and the one this quirk shipped with.
+_C4_LIST_DIALECT_DEFAULT = _C4_LIST_DIALECT["SR260"]
+
+
+# Row 1 of a remote's LCD, per remote. The bootstrap re-runs on every
+# Device_annce and re-sends the room each time, so a runtime set_room_info
+# cannot hold a room for long - the quirk has to know it. Rooms are read from
+# a JSON object keyed by lower-case IEEE, e.g.
+#     {"00:0f:ff:00:00:12:34:56": "Living Room"}
+# A remote missing from it gets its model's DEFAULT_ROOM. Edit with HA stopped
+# or restart afterwards; the file is read once at import.
+_C4_ROOMS_PATH = "/config/.storage/c4_remote_rooms.json"
+
+
+def _load_rooms() -> dict[str, str]:
+    try:
+        with open(_C4_ROOMS_PATH) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {str(k).lower(): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+C4_REMOTE_ROOMS: dict[str, str] = _load_rooms()
+
+
+def remote_room_for(device, default: str) -> str:
+    """Return the configured row-1 room for this remote, or `default`."""
+    return C4_REMOTE_ROOMS.get(str(getattr(device, "ieee", "")).lower(), default)
+
+
+# Model-named aliases; an IEEE is unique, so both models share one map.
+sr260_room_for = remote_room_for
+sr250_room_for = remote_room_for
+
+
+def c4_current_room(device, default: str = "") -> str:
+    """Return the room name last sent to `device` via `c4.ln.ri`."""
+    return getattr(device, "_c4_room", "") or default
+
+
+def c4_current_source(device) -> str:
+    """Return the active source last sent to `device` via `c4.ln.ri`.
+
+    No `default` parameter, unlike `c4_current_room`: "" is a legitimate answer
+    meaning the room is off, so there is nothing for a caller to substitute.
+    A device that has never been sent `ri` also reads "", which renders the
+    same and is the safe direction.
+    """
+    return getattr(device, "_c4_source", "")
+
+
+def c4_list_dialect(device):
+    """Return the measured list dialect for `device`'s model."""
+    model = (getattr(device, "model", "") or "").upper().replace("-", "")
+    for key, dialect in _C4_LIST_DIALECT.items():
+        if key in model:
+            return dialect
+    return _C4_LIST_DIALECT_DEFAULT
+
+
 async def _c4_send_list_items_response(
-    device, request_seq: str, items, icon: int = 0x01,
-) -> None:
+    device, request_seq: str, items, icon: int | None = 0x01,
+    endpoint: int = 1, form: str = "status",
+) -> bytes:
     """Reply to a `c4.ln.gi` request with the requested item labels.
 
-    The reply form (from captures) is:
-        0r<seq> 000 "<icon><item0>" "<icon><item1>" ...\r\n
-    where `<seq>` mirrors the seq from the request so the remote can
-    correlate, and `<icon>` is a 1-byte glyph code prefixed to each label
-    (default `0x01`, the "media tile" icon).
+    Two reply forms, one per model (see `c4_list_dialect`), both measured off
+    a real director:
+
+        "status"  0r<seq> 000 "<icon><item0>" "<icon><item1>" ...\r\n   (SR-260)
+        "count"   0r<seq> 000 <n> "<item0>" "<item1>" ...\r\n          (SR-250)
+
+    `<seq>` mirrors the request's seq. `<n>` is the number of items IN THIS
+    FRAME as 4 hex digits, not the number requested. `icon=None` sends labels
+    with no glyph prefix, which is what the SR-250 wants.
 
     `items` is an iterable of strings.  Embedded `"` is stripped so the
     quoting stays well-formed; `\r` / `\n` are replaced with spaces so the
@@ -511,14 +937,17 @@ async def _c4_send_list_items_response(
 
     The encoded frame must fit in a single Zigbee APS payload — bellows
     raises `MESSAGE_TOO_LONG` (status 56) above ~75 bytes once NWK
-    encryption overhead is added.  We greedily fit as many items as we can
-    and trust the remote to re-page (issue another `gi` for the remainder)
-    — the same chunking the official Control4 controller does, e.g. it
-    returns only 3 of 4 requested items in the watch-menu capture and the
-    SR260 follows up with `gi <listID> 0003 0001` for the missing one.
+    encryption overhead is added, so we greedily fit as many items as we
+    can and leave the remote to re-page for the remainder. That is a size
+    limit only: answering short on purpose is not required by either model.
+
+    `endpoint` is both the source and destination endpoint of the reply, and
+    defaults to **1**. Endpoint is set by DIRECTION, not by which endpoint the
+    request arrived on: the `gi` arrives on EP 197, and a director answers
+    EP 1 -> EP 1 on profile 0xC25C, cluster 0x0001. Replying to 197 is
+    silently discarded.
     """
-    icon_byte = icon & 0xFF
-    icon_char = chr(icon_byte)
+    icon_char = "" if icon is None else chr(icon & 0xFF)
     parts: list[str] = []
     for raw in items:
         s = str(raw if raw is not None else "")
@@ -529,47 +958,65 @@ async def _c4_send_list_items_response(
     # rejects above ~75 once NWK security overhead is added.
     MAX_FRAME_LEN = 70
 
-    header = f"0r{request_seq} 000"
+    # "count" uses a fixed-width placeholder, filled in once fit_count is
+    # known; a 4-hex-digit field cannot change length, so the fit is unaffected.
+    header = f"0r{request_seq} 000" + (" 0000" if form == "count" else "")
     # Pre-count: header + CRLF (2 bytes appended by _build_c4_frame).
     running_len = len(header) + 2
     fit_count = 0
     for part in parts:
-        # +1 for the space separator between header/parts.
         candidate_len = running_len + 1 + len(part)
         if candidate_len > MAX_FRAME_LEN:
             break
         running_len = candidate_len
         fit_count += 1
 
+    if form == "count":
+        header = f"0r{request_seq} 000 {fit_count:04x}"
+
     if fit_count > 0:
         body = " ".join(parts[:fit_count])
         cmd = f"{header} {body}"
     else:
-        # Even one item overflows.  Send the bare OK token so the remote
-        # gets a syntactically valid response and re-pages (or gives up).
         cmd = header
+
     data = _build_c4_frame(0, cmd)
 
     if fit_count < len(parts):
-        _LOGGER.debug(
+        # WARNING: a truncated reply is otherwise invisible at `info`.
+        _LOGGER.warning(
             "C4 display: send gi response seq=%s items=%d/%d (chunked) "
-            "icon=0x%02X len=%d",
-            request_seq, fit_count, len(parts), icon_byte, len(data),
+            "icon=%r len=%d",
+            request_seq, fit_count, len(parts), icon, len(data),
         )
     else:
         _LOGGER.debug(
-            "C4 display: send gi response seq=%s items=%d icon=0x%02X len=%d",
-            request_seq, fit_count, icon_byte, len(data),
+            "C4 display: send gi response seq=%s items=%d icon=%r len=%d",
+            request_seq, fit_count, icon, len(data),
         )
 
+    # Logged here, from the values handed to device.request, rather than at
+    # the caller: endpoint, form and icon are the fields a reply has silently
+    # got wrong, and only these variables are evidence about the wire. `mod`
+    # shows which copy of this module is loaded (a ZHA reload does not
+    # re-import it; restart HA after editing).
+    _LOGGER.info(
+        "C4 display: gi response -> device.request src_ep=%d dst_ep=%d "
+        "profile=0x%04X cluster=0x%04X len=%d form=%r icon=%r mod=%s",
+        endpoint, endpoint, C4_PROFILE_BUTTON, C4_CLUSTER_ID, len(data),
+        form, icon, __file__,
+    )
     await device.request(
         profile=C4_PROFILE_BUTTON,
         cluster=C4_CLUSTER_ID,
-        src_ep=1, dst_ep=1,
+        src_ep=endpoint, dst_ep=endpoint,
         sequence=device.get_sequence(),
         data=data,
         expect_reply=False,
     )
+
+    # Returned so a caller can log the exact bytes under its own logger.
+    return data
 
 
 async def _c4_send_controller_identity(device, source="unknown", zcl_seq=None):
@@ -793,6 +1240,26 @@ def _sync_ep1_model(device, model: str, source="unknown"):
 # Sniff model string from a ZCL Report Attributes payload
 # ---------------------------------------------------------------------------
 
+def _c4_schedule_handshake(device, source: str) -> None:
+    """Send coordinator identity + MTORR to a C4 device, in the background."""
+    async def _send_handshake(dev=device):
+        try:
+            await _c4_report_controller_identity(
+                dev, source, zcl_seq=dev.get_sequence(),
+            )
+            _LOGGER.debug("C4 sniffer: identity sent for %s (%s)", dev.ieee, source)
+        except Exception as e:
+            _LOGGER.warning(
+                "C4 sniffer: identity send failed for %s — %s", dev.ieee, e,
+            )
+        try:
+            await _send_many_to_one_route_request(dev.application)
+            _LOGGER.debug("C4 sniffer: MTORR sent for %s", dev.ieee)
+        except Exception as e:
+            _LOGGER.warning("C4 sniffer: MTORR failed for %s — %s", dev.ieee, e)
+    asyncio.ensure_future(_send_handshake())
+
+
 def _c4_sniff_model(device, inner: bytes) -> None:
     """Peek into a ZCL Report Attributes payload for attr 0x0007 (model string).
 
@@ -811,6 +1278,27 @@ def _c4_sniff_model(device, inner: bytes) -> None:
             return
         while remaining:
             attr, remaining = foundation.Attribute.deserialize(remaining)
+            if (
+                attr.attrid == C4_ATTR_CONTROLLER_ADDR
+                and isinstance(attr.value.value, (bytes, bytearray))
+                and len(attr.value.value) == 0
+            ):
+                # The remote has no controller and is not asking for one, so
+                # the model-report trigger below never fires. Offer it as the
+                # Read Attr Rsp it would have got had it asked: the remote
+                # rejects the Report form with UNSUPPORTED_ATTRIBUTE (0x82).
+                # The handshake below still sends that Report, which is
+                # harmless, because its MTORR is what builds the route back.
+                _LOGGER.info(
+                    "C4 sniffer: %s reports no controller (0x0012 empty) - "
+                    "sending identity unprompted, raw=%s",
+                    device.ieee, bytes(inner).hex(),
+                )
+                asyncio.ensure_future(_c4_send_controller_identity(
+                    device, "empty_controller_addr", zcl_seq=hdr.tsn,
+                ))
+                _c4_schedule_handshake(device, "empty_controller_addr")
+                continue
             if attr.attrid == C4_ATTR_MODEL and isinstance(attr.value.value, str):
                 raw = attr.value.value
                 parts = raw.split(":")
@@ -824,33 +1312,7 @@ def _c4_sniff_model(device, inner: bytes) -> None:
 
                     # Send coordinator identity + MTORR in response to every
                     # model-bearing ReportAttributes from this device.
-                    async def _send_handshake(dev=device, mod=model):
-                        try:
-                            await _c4_report_controller_identity(
-                                dev,
-                                f"model_report_{mod}",
-                                zcl_seq=dev.get_sequence(),
-                            )
-                            _LOGGER.debug(
-                                "C4 sniffer: identity sent for %s model=%r",
-                                dev.ieee, mod,
-                            )
-                        except Exception as e:
-                            _LOGGER.warning(
-                                "C4 sniffer: identity send failed for %s — %s",
-                                dev.ieee, e,
-                            )
-                        try:
-                            await _send_many_to_one_route_request(dev.application)
-                            _LOGGER.debug(
-                                "C4 sniffer: MTORR sent for %s", dev.ieee
-                            )
-                        except Exception as e:
-                            _LOGGER.warning(
-                                "C4 sniffer: MTORR failed for %s — %s",
-                                dev.ieee, e,
-                            )
-                    asyncio.ensure_future(_send_handshake())
+                    _c4_schedule_handshake(device, f"model_report_{model}")
 
                 if not device.model or device.model in _INVALID_MODELS:
                     device.model = model
@@ -1052,3 +1514,104 @@ class C4ConfigCluster(CustomCluster):
             self.endpoint.endpoint_id, hdr.command_id,
             raw_body.hex() if isinstance(raw_body, (bytes, bytearray)) else repr(args),
         )
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap primitives, shared by every C4 handheld
+# ---------------------------------------------------------------------------
+# Both remotes need the same provisioning primitives; they sit here with
+# `_c4_send_room_info` and `_c4_send_display_message`, which they are always
+# used alongside. The SEQUENCE stays per model - only the primitives are shared.
+
+# Gap between individual bootstrap commands. The real controller interleaves
+# these over a couple of seconds; C4_PROVISION_DELAY (0.05s) is aimed at mains
+# powered devices and is too aggressive for a sleepy remote.
+BOOTSTRAP_CMD_GAP = 0.25
+
+DEFAULT_LOCALE = "en_US"
+
+# c4.zr.loc carries two leading bytes whose meaning is unconfirmed. p2=0x0f
+# does not match the locale string length (5), so it is probably a region or
+# feature flag. Replicating the observed values verbatim.
+LOCALE_P1 = 0x00
+LOCALE_P2 = 0x0F
+
+
+async def _c4_send_raw(device, cmd: str) -> None:
+    """Frame and send one C4 ASCII command on the button profile.
+
+    EP1 -> EP1, profile 0xC25C, cluster 0x0001, no reply - the same send path
+    as `_c4_send_display_message` and friends above.
+
+    Route discovery is left to zigpy, which forces it from the second attempt
+    onwards. Do NOT pass force_route_discovery here: `Device.request` has no
+    such parameter, so it falls into **kwargs and collides with the value
+    zigpy's own send lambda supplies, raising TypeError inside the retry loop
+    and burning every attempt.
+    """
+    data = _build_c4_frame(int(cmd[2:6], 16), cmd)
+    await device.request(
+        profile=C4_PROFILE_BUTTON,
+        cluster=C4_CLUSTER_ID,
+        src_ep=1,
+        dst_ep=1,
+        sequence=device.get_sequence(),
+        data=data,
+        expect_reply=False,
+    )
+
+
+async def _c4_send_time(device, when=None, trailer: str | None = "01") -> None:
+    """Push wall-clock time: ``0s<seq> c4.zr.tm <hh> <mm> <ss>[ <trailer>]``.
+
+    The time is raw byte values rendered as hex, so 19:15:18 is ``13 0f 12``.
+    A Control4 director sends the SR-260 a fourth byte, ``01``, on a Monday
+    and on a Friday alike, so it is not the day of week (this used to send
+    isoweekday). It sends the SR-250 only the three time bytes. Pass
+    ``trailer=None`` for the SR-250. Both models accepted the old form too.
+
+    Per the SR260 init capture the controller sends `tm` before any UI command,
+    and re-sends it unprompted after a cold-boot rejoin. If the remote never
+    receives it, its clock drifts.
+    """
+    when = when or datetime.datetime.now()
+    seq = next_c4_seq(device)
+    cmd = (
+        f"0s{seq:04x} c4.zr.tm "
+        f"{when.hour:02x} {when.minute:02x} {when.second:02x}"
+    )
+    if trailer:
+        cmd += f" {trailer}"
+    _LOGGER.debug("C4 bootstrap: tm -> %r", cmd)
+    await _c4_send_raw(device, cmd)
+
+
+async def _c4_send_locale(device, locale: str = DEFAULT_LOCALE) -> None:
+    """Push UI locale: ``0s<seq> c4.zr.loc <p1> <p2> "<locale>"``."""
+    safe = "".join(c for c in locale if c.isalnum() or c == "_")
+    seq = next_c4_seq(device)
+    cmd = f'0s{seq:04x} c4.zr.loc {LOCALE_P1:02x} {LOCALE_P2:02x} "{safe}"'
+    _LOGGER.debug("C4 bootstrap: loc -> %r", cmd)
+    await _c4_send_raw(device, cmd)
+
+
+async def _c4_answer_motion_wake(device, default_room: str, trailer: str | None = "01") -> None:
+    """Answer `c4.zr.mot` the way a director does: `tm`, then both LCD rows.
+
+    Measured: a source changed from the app is NOT pushed to a sleeping
+    remote. The director waits for the pickup's `mot` and answers within
+    ~100 ms with `tm` then `ri "<room>" "<source>"`, so row 2 is current the
+    moment the screen lights.
+    Without this, a source set while the remote slept never reached it.
+    """
+    try:
+        await _c4_send_time(device, trailer=trailer)
+        await _c4_send_room_info(
+            device, c4_current_room(device, default_room), c4_current_source(device),
+        )
+    except Exception as exc:
+        _LOGGER.debug("C4: motion-wake answer failed for %s: %s", device.ieee, exc)
+    try:
+        await c4_flush_pending_beep(device)
+    except Exception as exc:
+        _LOGGER.debug("C4: motion-wake beep flush failed for %s: %s", device.ieee, exc)

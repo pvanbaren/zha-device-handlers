@@ -24,7 +24,7 @@ blueprint:
     expose an optional Action input that is invoked on press.
 
     Hold-to-repeat: while a button is held the SR260 re-sends `c4.zr.bh`
-    every ~100ms, surfaced as remote_button_long_press by the quirk. The
+    every ~500ms, surfaced as remote_button_long_press by the quirk. The
     direct mappings (volume, d-pad, transport, channel±, page±, color,
     digits, info / menu / cancel / control4 / guide) auto-repeat for each
     tick. The user-defined Action inputs (Watch, Listen, Room Off, List,
@@ -374,7 +374,7 @@ variables:
   blue_command:         !input blue_command
   star_command:         !input star_command
   hash_command:         !input hash_command
-  # True when the trigger is a held-button auto-repeat tick (every ~100ms
+  # True when the trigger is a held-button auto-repeat tick (every ~500ms
   # the SR260 re-sends `c4.zr.bh`, surfaced as remote_button_long_press).
   # Used below to suppress one-shot user actions (Watch / Listen / Room
   # Off / I / II / III / Prev / DVR / List) on hold so a held button

@@ -23,6 +23,7 @@ controller required.
 | loz-5s1-w | Dual Switched Outlet | 2 switches (one per outlet) |
 | C4-Z2IO-ZP | Zigbee IO Module | 2 switches (relays), 5 binary sensors (contacts), temperature, humidity |
 | C4-SR260 | IR/Zigbee Remote (50 buttons + LCD) | 50 event entities (press, release), battery |
+| C4-SR250B | System Remote (47 buttons + LCD) | `zha_event` per key (`<key>_press` / `_hold` / `_release`), battery |
 
 All Control4 Zigbee devices use a proprietary text-based serial protocol
 layered on top of ZigBee APS instead of standard ZCL clusters. These quirks
@@ -61,6 +62,42 @@ be physically close to the device during the process.
 For a complete reference of button sequences across all Control4 Zigbee
 products, see the
 [Genesis Technologies definitive guide](https://technet.genesis-technologies.ch/control4-zigbee-the-definitive-guide/).
+
+### SR-250 handheld remote sequences
+
+The Genesis guide covers the **System Remote SR-250** explicitly:
+
+| Action | SR-250 sequence |
+|---|---|
+| Identify | 4 x red C4 button |
+| Reboot | Room Off, #, *, 1, 5, 4, 1, 5 |
+| Channel Blink (shows current Zigbee channel) | List, 2, 4, 8, 6, #, * — **see correction below**; the guide's `List, Info, Config, …` does not work |
+| Reset Defaults | List, Info, Config, Factory Defaults |
+| Leave Mesh + Factory Reset | Room Off, #, *, 1, 3, 4, 1, 3 |
+
+Identify and Channel Blink are non-destructive and are the two worth reaching
+for first when diagnosing. The guide documents no rejoin/re-announce sequence
+for handhelds.
+
+**The guide's Channel Blink sequence is wrong for this remote — verified on the
+device.** There is no `Config` button and no `Config` item in the menu either.
+
+What actually works:
+
+```
+List, 2, 4, 8, 6, #, *
+```
+
+That opens a Diagnostic window directly — no `Info`, no `Config`. It reports
+channel, beacon count, a version/date field and the EUID, e.g.
+`ch=<channel>, bc=0, <version>, EUID=000fff0000123456`. This is the cheapest way to
+learn which network the remote thinks it is on, and it needs no coordinator.
+
+The `List` menu on this firmware contains only: Display Brightness, Keypad
+Brightness, Motion Detect, Light Sensor, Battery Level, Recharge Station,
+Factory Defaults, About, Language. `About` shows only a MAC address. Since
+`Reset Defaults` is documented as `List, Info, Config, Factory Defaults`, that
+entry is likely also just `List` → `Factory Defaults`.
 
 ### Before You Start
 
@@ -215,10 +252,14 @@ The quirk exposes one HA Event entity per physical key (50 entities total)
 and a battery sensor. Each press emits a `remote_button_short_press` action
 on key-down (the C4 `c4.zr.bb` "button begin" event) followed by a
 `remote_button_short_release` on key-up (`c4.zr.be` "button end"). While
-a key is held the remote re-sends `c4.zr.bh` every ~100ms, surfaced as
+a key is held the remote re-sends `c4.zr.bh` about every 500 ms, surfaced as
 `remote_button_long_press` actions — so HA automations can auto-repeat
 for held volume / channel / d-pad / transport keys by listening on
 `remote_button_long_press` in addition to `remote_button_short_press`.
+Each long-press event's args carry `hold_ms`, the remote's own hold timer
+(the 4th `bh` field, e.g. 418, 919, 1420, ...). Two repeats a second is slow
+for a volume ramp, so an automation can step further the longer the key is
+held, the way a Control4 director accelerates a held volume key.
 
 The Event entity names follow the physical layout:
 
@@ -396,6 +437,91 @@ action:
 `motion_wake` corresponds to the SR260's `c4.zr.mot` announce — the
 remote also sends one shortly after a cold boot / rejoin, so expect an
 event right after the device comes online.
+
+**Check-in heartbeat** — an idle remote checks in every 60 s, and the quirk
+fires a `zha_event` with `command: checkin` at most once every 10 minutes per
+remote. ZHA treats these remotes as mains-powered and does not mark one
+unavailable when its battery runs flat, so this is the signal to watch for a
+remote that has gone quiet. Filter `zha_event` automations on `command`, or the
+heartbeat reads as a key event.
+
+**Room and source rows** — row 1 of the idle screen is the room, row 2 the
+active source (`c4.ln.ri`). The quirk sends both on bootstrap and again on
+every pickup (`c4.zr.mot`), as a director does, from a per-device cache. Set
+each remote's room in `/config/.storage/c4_remote_rooms.json`, keyed by
+lower-case IEEE, then restart HA:
+
+```json
+{"00:0f:ff:00:00:12:34:56": "Living Room"}
+```
+
+A remote missing from the file shows `DEFAULT_ROOM` ("Living Room"). The same
+file serves SR-250s.
+
+**More display commands** (cluster `0xFC47`, `command_type: server`):
+
+| Command id | Name | Args | Does |
+|---|---|---|---|
+| `2` | `find_remote` | (none) | beep until a key is pressed (`c4.zr.fr 01 ff`) |
+| `3` | `set_room_info` | `room`, `source` | write both rows; `source: ""` shows the room as off. The only way to clear row 2 |
+| `4` | `show_gauge` | `value` (0-100), `label` | the native volume bar (`c4.ln.sc`); composites over the rows and self-clears |
+| `5` | `set_setting` | `verb`, `value` (hex bytes) | queue a `c4.zr.<verb>` write, sent when the remote next wakes |
+| `6` | `get_setting` | `verb` | queue a read; the reply fires a `setting_value` `zha_event` |
+| `7` | `show_settings` | (none) | open the quirk's own List > Settings menu |
+| `8` | `show_menu` | `menu` (JSON tree) | open a menu tree the quirk navigates; a leaf fires `menu_action` |
+| `9` | `beep` | `seconds` | beep for 1-254 s, 255 until a key, 0 to stop |
+
+A remote that is asleep (the normal case for a lost one) gets a beep after
+its next check-in or pickup instead, for up to 10 minutes. `show_gauge` should
+be driven by the amplifier's reported volume, not by the volume keys: a
+director sends no bar on mute. See `c4_menu_tree.py` for the `show_menu` tree
+format; `menu_action` carries `action`, `label`, `path` and `selected_index`.
+
+**Check-ins and rejoins** — the remote checks in on EP 2 about every 60 s and
+rejoins after a few go unanswered. The quirk answers them, and the wake-time
+attribute reads and firmware query, as a director does (`c4_checkin.py`).
+
+**Pairing an SR-260** — a fresh SR-260 never announces its model until it is
+bootstrapped, and the quirk cannot bootstrap a remote whose model it does not
+know. Break the loop once: with HA **stopped**, add `"<ieee>": "C4-SR260"` to
+`/config/.storage/c4_quirk_data.json`, then start HA. (The file is rewritten
+from memory while HA runs, so an edit under a running HA is lost.)
+
+See `documentation/control4-sr260-remote-protocol.md`, "Measured on the
+wire", for the frames behind all of this.
+
+### C4-SR250B Remote
+
+The older 47-button remote with a two-line LCD. Battery-powered (sleepy end
+device). It announces its model unprompted, so it pairs without seeding the
+model store.
+
+Until it receives the Control4 bootstrap (`tm`, splash, `loc`, `ri`) its LCD
+reads "Waiting for network" and its keypad sends nothing; the quirk sends the
+bootstrap on device init and again whenever the remote speaks after a reboot.
+Every key then fires a `zha_event` whose `command` is `<key>_press`,
+`<key>_hold` (repeated about every 500 ms) or `<key>_release`, e.g.
+`volume_up_press`, `digit_5_release`; the same commands are exposed as device
+triggers. A `_hold` event's args also carry `hold_ms`, as on the SR-260. This
+remote's `bh` has no hold-timer field, so the quirk times it from the key's `bb`. Key names are in `C4SR250RawCluster._KEY_SLUGS`. A pickup fires
+`motion_wake`.
+
+It carries the same display cluster as the SR-260, so `show_list`,
+`set_room_info`, `find_remote`/`beep` and `show_menu` work, and its room comes
+from the same `c4_remote_rooms.json`. Differences from the SR-260:
+
+- **No volume bar.** The SR-250 has no gauge overlay; `show_gauge` refuses.
+- **Lists use the SR-250 dialect**: a per-frame item count and no glyphs,
+  handled automatically. A submenu row in `show_menu` is written `Name >`.
+- **Right sends nothing inside a list**, so Select is the only way into a
+  submenu, and Cancel steps back one level.
+- **Settings**: the remote refuses `ast` and `ls`, `wom` is only off/on, and
+  there is no text colour.
+
+The quirk also acknowledges the remote's EP-2 check-ins (without which it
+rejoins about every 5.5 minutes), re-arms the bootstrap when its power-cycle
+counter moves, and clears the bogus mains/rx-on-when-idle bits it advertises
+so the coordinator buffers for it as a sleepy child.
 
 ### C4-Z2IO-ZP IO Module
 
