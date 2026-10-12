@@ -215,10 +215,14 @@ The quirk exposes one HA Event entity per physical key (50 entities total)
 and a battery sensor. Each press emits a `remote_button_short_press` action
 on key-down (the C4 `c4.zr.bb` "button begin" event) followed by a
 `remote_button_short_release` on key-up (`c4.zr.be` "button end"). While
-a key is held the remote re-sends `c4.zr.bh` every ~100ms, surfaced as
+a key is held the remote re-sends `c4.zr.bh` about every 500 ms, surfaced as
 `remote_button_long_press` actions — so HA automations can auto-repeat
 for held volume / channel / d-pad / transport keys by listening on
 `remote_button_long_press` in addition to `remote_button_short_press`.
+Each long-press event's args carry `hold_ms`, the remote's own hold timer
+(the 4th `bh` field, e.g. 418, 919, 1420, ...). Two repeats a second is slow
+for a volume ramp, so an automation can step further the longer the key is
+held, the way a Control4 director accelerates a held volume key.
 
 The Event entity names follow the physical layout:
 
@@ -396,6 +400,58 @@ action:
 `motion_wake` corresponds to the SR260's `c4.zr.mot` announce — the
 remote also sends one shortly after a cold boot / rejoin, so expect an
 event right after the device comes online.
+
+**Check-in heartbeat** — an idle remote checks in every 60 s, and the quirk
+fires a `zha_event` with `command: checkin` at most once every 10 minutes per
+remote. ZHA treats these remotes as mains-powered and does not mark one
+unavailable when its battery runs flat, so this is the signal to watch for a
+remote that has gone quiet. Filter `zha_event` automations on `command`, or the
+heartbeat reads as a key event.
+
+**Room and source rows** — row 1 of the idle screen is the room, row 2 the
+active source (`c4.ln.ri`). The quirk sends both on bootstrap and again on
+every pickup (`c4.zr.mot`), as a director does, from a per-device cache. Set
+each remote's room in `/config/.storage/c4_remote_rooms.json`, keyed by
+lower-case IEEE, then restart HA:
+
+```json
+{"00:0f:ff:00:00:12:34:56": "Living Room"}
+```
+
+A remote missing from the file shows `DEFAULT_ROOM` ("Living Room"). The same
+file serves SR-250s.
+
+**More display commands** (cluster `0xFC47`, `command_type: server`):
+
+| Command id | Name | Args | Does |
+|---|---|---|---|
+| `2` | `find_remote` | (none) | beep until a key is pressed (`c4.zr.fr 01 ff`) |
+| `3` | `set_room_info` | `room`, `source` | write both rows; `source: ""` shows the room as off. The only way to clear row 2 |
+| `4` | `show_gauge` | `value` (0-100), `label` | the native volume bar (`c4.ln.sc`); composites over the rows and self-clears |
+| `5` | `set_setting` | `verb`, `value` (hex bytes) | queue a `c4.zr.<verb>` write, sent when the remote next wakes |
+| `6` | `get_setting` | `verb` | queue a read; the reply fires a `setting_value` `zha_event` |
+| `7` | `show_settings` | (none) | open the quirk's own List > Settings menu |
+| `8` | `show_menu` | `menu` (JSON tree) | open a menu tree the quirk navigates; a leaf fires `menu_action` |
+| `9` | `beep` | `seconds` | beep for 1-254 s, 255 until a key, 0 to stop |
+
+A remote that is asleep (the normal case for a lost one) gets a beep after
+its next check-in or pickup instead, for up to 10 minutes. `show_gauge` should
+be driven by the amplifier's reported volume, not by the volume keys: a
+director sends no bar on mute. See `c4_menu_tree.py` for the `show_menu` tree
+format; `menu_action` carries `action`, `label`, `path` and `selected_index`.
+
+**Check-ins and rejoins** — the remote checks in on EP 2 about every 60 s and
+rejoins after a few go unanswered. The quirk answers them, and the wake-time
+attribute reads and firmware query, as a director does (`c4_checkin.py`).
+
+**Pairing an SR-260** — a fresh SR-260 never announces its model until it is
+bootstrapped, and the quirk cannot bootstrap a remote whose model it does not
+know. Break the loop once: with HA **stopped**, add `"<ieee>": "C4-SR260"` to
+`/config/.storage/c4_quirk_data.json`, then start HA. (The file is rewritten
+from memory while HA runs, so an edit under a running HA is lost.)
+
+See `documentation/control4-sr260-remote-protocol.md`, "Measured on the
+wire", for the frames behind all of this.
 
 ### C4-Z2IO-ZP IO Module
 

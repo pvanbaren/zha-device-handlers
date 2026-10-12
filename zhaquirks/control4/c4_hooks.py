@@ -22,6 +22,7 @@ _C4_MODEL_QUIRK_MAP is populated by each device module at import time via
 """
 
 import logging
+import asyncio
 import os
 import sys
 import time
@@ -33,6 +34,7 @@ if _QUIRK_DIR not in sys.path:
 import c4_helpers as C4
 from c4_helpers import (
     C4_CLUSTER_ID,
+    C4_DISPLAY_CLUSTER_ID,
     C4_IEEE_PREFIX,
     C4_PROFILE_BUTTON,
     C4_PROFILE_NETWORK,
@@ -41,6 +43,7 @@ from c4_helpers import (
     C4_ENDPOINT_DEFAULTS,
     _INVALID_MODELS,
     _c4_sniff_model,
+    c4_battery_from_status,
     get_model_from_ieee,
 )
 
@@ -121,11 +124,29 @@ try:
                 # intercepted here) and all entities stay "unavailable".
                 self.last_seen = time.time()
 
+                # Any frame means the remote is awake, including the periodic
+                # 0xC25D status report a docked remote sends untouched: send
+                # queued c4.zr settings (see C4SR260DisplayCluster).
+                if getattr(self, "_c4_pending_settings", None):
+                    ep1 = self.endpoints.get(1)
+                    display = (
+                        ep1.in_clusters.get(C4_DISPLAY_CLUSTER_ID) if ep1 else None
+                    )
+                    flush = getattr(display, "flush_pending_settings", None)
+                    if flush is not None:
+                        asyncio.ensure_future(flush())
+
                 msg = packet.data
                 if hasattr(msg, 'serialize'):
                     msg = msg.serialize()
                 elif not isinstance(msg, (bytes, bytearray)):
                     msg = bytes(msg)
+
+                # Remembered for the remote's List > Settings > Battery Level.
+                if packet.profile_id == C4_PROFILE_NETWORK:
+                    battery = c4_battery_from_status(msg)
+                    if battery is not None:
+                        self._c4_battery = battery
 
                 _LOGGER.debug(
                     "C4 intercept: profile=0x%04X cluster=0x%04X "
